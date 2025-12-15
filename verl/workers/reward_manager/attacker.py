@@ -64,10 +64,11 @@ class AttkNoLtRewardManager(AbstractRewardManager):
             response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
 
             ############# INFO ################
-            ground_truth = data_item.non_tensor_batch["label"]
+            ground_truth = data_item.non_tensor_batch["gt_sql"]
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
             question=data_item.non_tensor_batch["question"]
             schema=data_item.non_tensor_batch["schema"]
+            db_id=data_item.non_tensor_batch["db_id"]
             
     
             ############# INFO ################
@@ -80,7 +81,9 @@ class AttkNoLtRewardManager(AbstractRewardManager):
                 model_output=response_str,
                 schema=schema,
                 question=question,
-                resp_len=len(valid_response_ids)
+                resp_len=len(valid_response_ids),
+                ground_truth=ground_truth,
+                db_id = db_id,
             )
 
             if isinstance(score, dict):

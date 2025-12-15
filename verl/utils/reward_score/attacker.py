@@ -198,6 +198,108 @@ def call_vllm_judge(prompt: str, cfg: VLLMJudgeConfig) -> str:
 
     raise RuntimeError(f"vLLM judge call failed: {last_err}")
 
+# ========================
+# 执行sql 获取 label score
+# ========================
+import concurrent.futures
+import time
+import random
+import sqlite3
+import os
+
+# 真实数据库执行函数
+def execute_sql_query(sql, db_path, timeout_seconds=30):
+    """
+    执行 SQL 语句。
+    直接连接 SQLite 数据库执行。
+    注意：如果 db_path 不存在，将抛出 FileNotFoundError。
+    """
+    # 1. 检查数据库文件是否存在
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"Database file not found: {db_path}")
+    
+    conn = None
+    try:
+        # 2. 连接真实的 SQLite 数据库
+        # timeout 参数指定等待数据库锁释放的时间（秒），并非查询执行超时
+        conn = sqlite3.connect(db_path, timeout=timeout_seconds)
+        cursor = conn.cursor()
+        
+        # 执行查询
+        cursor.execute(sql)
+        result = cursor.fetchall()
+        return result
+            
+    except sqlite3.Error as e:
+        raise e 
+    finally:
+        if conn:
+            conn.close()
+
+def evaluate_sql_match(attacker_sql, gt_sql, db_id, db_base_path, gold, timeout=30):
+    """
+    多线程执行 SQL 并比较结果
+    参数:
+    - db_id: 数据库的 ID (例如 "concert_singer")
+    - db_base_path: 数据库所在的根目录 (例如 "./data/database")
+    """
+    attacker_sql = attacker_sql.strip()
+    gt_sql = gt_sql.strip()
+    
+    # 构造数据库文件的完整路径
+    # 假设结构为: base_path/db_id/db_id.sqlite (Spider 数据集常见结构)
+    # 如果你的结构不同，请修改此处，例如: os.path.join(db_base_path, f"{db_id}.sqlite")
+    db_path = os.path.join(db_base_path, db_id, f"{db_id}.sqlite")
+    
+    attacker_result = None
+    gt_result = None
+    execution_error = False
+
+    # 使用 ThreadPoolExecutor 并行执行
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # 提交任务，将 db_path 传递给执行函数
+        future_attacker = executor.submit(execute_sql_query, attacker_sql, db_path, timeout)
+        future_gt = executor.submit(execute_sql_query, gt_sql, db_path, timeout)
+
+        try:
+            # 获取结果，设置超时时间
+            # 注意：Python 线程难以强制 Kill，这里的 timeout 是指主线程不再等待
+            # 如果是 SQLite，真正的 I/O 中断比较困难，但在获取结果层面我们会放弃等待
+            attacker_result = future_attacker.result(timeout=timeout)
+            gt_result = future_gt.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            print("❌ Execution Timed Out!")
+            execution_error = True
+        except Exception as e:
+            print(f"❌ Execution Error: {e}")
+            execution_error = True
+
+    # 评分逻辑
+    ret = False
+    
+    if execution_error:
+        print("Scoring: False (Execution Failed)")
+        return ret
+
+    # 比较结果集 (使用 set 忽略顺序)
+    # 注意：结果集里的元素必须是 hashable 的 (如 tuple)，列表不能被 set
+    try:
+        attacker_set = set(attacker_result)
+        gt_set = set(gt_result)
+        
+        is_match = (attacker_set == gt_set)
+        
+        print(f"Attacker Result: {attacker_set}")
+        print(f"GT Result:       {gt_set}")
+        print(f"Match:           {is_match}")
+
+        if not is_match:
+            return True
+                
+    except Exception as e:
+        print(f"Error during comparison: {e}")
+
+    return False
 # =========================
 # ✅ LLM-as-Judge compute_score (the one you want)
 # =========================
@@ -206,6 +308,8 @@ def compute_score(
     schema: str,
     question: str,
     resp_len: int,
+    ground_truth: str,
+    db_id: str,
     L: int = 2048,
     weights: ScoreWeights = ScoreWeights(),
     judge_cfg: VLLMJudgeConfig = VLLMJudgeConfig(),
@@ -248,14 +352,18 @@ def compute_score(
     # -------------------------
     # 2) Label score
     # -------------------------
+    # attacker_sql = attacker_sql.strip()
+    # gt_sql = ground_truth
+    is_ok = False
     if gold is not None and gold == "NO":
         r_label = 0.0
         correct = False
     else:
-        correct = True
-        if correct and strict_ok:
+        is_ok = evaluate_sql_match(attacker_sql, ground_truth, db_id, db_base_path="/root/autodl-fs/train_databases", gold=gold, timeout=30)
+        _SCORE_LOGGER.info(f"the sql is {is_ok}")
+        if is_ok == True and strict_ok:
             r_label = weights.label_correct_strict
-        elif correct:
+        elif is_ok == True:
             r_label = weights.label_correct_loose
         else:
             r_label = 0.0
@@ -284,6 +392,8 @@ def compute_score(
             "r_label": r_label ,
             "r_len": r_len,
         },
+        "attacker_resp": model_output,
+        "is_ok": is_ok,
         "gold": gold,
         "attacker_sql": attacker_sql,
         "judge_resp": judge_text,
