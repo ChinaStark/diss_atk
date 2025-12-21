@@ -260,7 +260,7 @@ class TaskRunner:
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
             self.mapping[Role.RefPolicy] = "global_pool"
-    def get_score_logger(log_file: str = "score.log", level: int = logging.INFO) -> logging.Logger:
+    def get_score_logger(self, log_file: str = "score.log", level: int = logging.INFO) -> logging.Logger:
         """
         Create (or reuse) a file logger.
         - No console output
