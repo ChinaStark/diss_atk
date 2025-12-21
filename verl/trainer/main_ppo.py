@@ -30,6 +30,8 @@ from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
 from verl.utils.device import is_cuda_available
 from verl.utils.import_utils import load_extern_object
+import logging
+from logging.handlers import RotatingFileHandler
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -258,7 +260,36 @@ class TaskRunner:
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
             self.mapping[Role.RefPolicy] = "global_pool"
+    def get_score_logger(log_file: str = "score.log", level: int = logging.INFO) -> logging.Logger:
+        """
+        Create (or reuse) a file logger.
+        - No console output
+        - Rotating file to avoid huge logs
+        """
+        logger = logging.getLogger("score_logger")
+        logger.setLevel(level)
+        logger.propagate = False  # IMPORTANT: prevents printing to root logger/console
 
+        abs_path = os.path.abspath(log_file)
+        # Avoid adding duplicate handlers (common when this code is imported multiple times)
+        for h in logger.handlers:
+            if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == abs_path:
+                return logger
+
+        os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
+
+        fh = RotatingFileHandler(
+            abs_path,
+            maxBytes=10 * 1024 * 1024,  # 50MB
+            backupCount=5,
+            encoding="utf-8",
+        )
+        fh.setLevel(level)
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s | %(levelname)s | pid=%(process)d | %(message)s"
+        ))
+        logger.addHandler(fh)
+        return logger
     def run(self, config):
         """Execute the main PPO training workflow.
 
@@ -275,6 +306,10 @@ class TaskRunner:
         from omegaconf import OmegaConf
 
         from verl.utils.fs import copy_to_local
+
+        get_score_logger(config.trainer.logger_path)
+        pprint("[IMPORTANT] Init the logger to the path: ", config.trainer.logger_path)
+
 
         print(f"TaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
         pprint(OmegaConf.to_container(config, resolve=True))

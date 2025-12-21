@@ -81,43 +81,8 @@ class ScoreWeights:
     over_len_penalty_mag: float = 0.5
 import os
 import json
-import logging
-from logging.handlers import RotatingFileHandler
-
-def get_score_logger(log_file: str = "score.log", level: int = logging.INFO) -> logging.Logger:
-    """
-    Create (or reuse) a file logger.
-    - No console output
-    - Rotating file to avoid huge logs
-    """
-    logger = logging.getLogger("score_logger")
-    logger.setLevel(level)
-    logger.propagate = False  # IMPORTANT: prevents printing to root logger/console
-
-    abs_path = os.path.abspath(log_file)
-    # Avoid adding duplicate handlers (common when this code is imported multiple times)
-    for h in logger.handlers:
-        if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == abs_path:
-            return logger
-
-    os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
-
-    fh = RotatingFileHandler(
-        abs_path,
-        maxBytes=50 * 1024 * 1024,  # 50MB
-        backupCount=5,
-        encoding="utf-8",
-    )
-    fh.setLevel(level)
-    fh.setFormatter(logging.Formatter(
-        "%(asctime)s | %(levelname)s | pid=%(process)d | %(message)s"
-    ))
-    logger.addHandler(fh)
-    return logger
 
 
-# 建议：模块级只初始化一次
-_SCORE_LOGGER = get_score_logger("logs/rollouts.log")
 
 def compute_score(
     model_output: str,
@@ -205,8 +170,8 @@ def compute_score(
         "llm_resp": processed,   # 或 processed["pred"] 根据你结构改
         "ll_resp_len": resp_len
     }
-    
-    _SCORE_LOGGER.info(json.dumps(summary, ensure_ascii=False))
+    logger_score = logging.getLogger("score_logger")
+    logger_score.info(json.dumps(summary, ensure_ascii=False))
     if not return_breakdown:
         return float(total)
 
