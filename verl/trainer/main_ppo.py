@@ -308,7 +308,7 @@ class TaskRunner:
         from verl.utils.fs import copy_to_local
 
         self.get_score_logger(config.trainer.logger_path)
-        pprint("[IMPORTANT] Init the logger to the path: ", config.trainer.logger_path)
+        pprint(f"[IMPORTANT] Init the logger to the path: {config.trainer.logger_path}")
 
 
         print(f"TaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
