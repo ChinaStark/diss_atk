@@ -84,7 +84,7 @@ class ScoreWeights:
     llm_reward_mag: float = 2.0
 
     # 4) length reward in token-length space (difficulty level: easy/medium/hard)
-    medium_len: int = 1024  # target token length for medium difficulty
+    medium_len: int = 2048  # base length t used by gaussian length rewards
     len_tolerance_ratio: float = 0.5
     len_mag: float = 2.0
 
@@ -115,35 +115,41 @@ def _softmax2(a: float, b: float) -> Tuple[float, float]:
 
 def _compute_length_reward(resp_token_len: int, difficulty_level: str, weights: ScoreWeights) -> Tuple[float, dict[str, Any]]:
     """Length reward by categorical difficulty: easy / medium / hard (all lengths are token lengths)."""
-    resp_token_len = max(0, int(resp_token_len))
-    target_len = max(1, int(weights.medium_len))
+    x = float(max(0, int(resp_token_len)))
+    t = float(max(1, int(weights.medium_len)))
 
-    len_ratio = resp_token_len / float(target_len)
-    easy_reward = weights.len_mag * _clip(1.0 - len_ratio, 0.0, 1.0)
-    hard_reward = weights.len_mag * _clip(len_ratio - 1.0, 0.0, 1.0)
-    medium_scale = max(16, int(round(target_len * max(1e-6, weights.len_tolerance_ratio))))
-    # Smooth medium score: closer to target gets higher reward, with gradual decay.
-    diff = abs(resp_token_len - target_len)
-    medium_reward = weights.len_mag * math.exp(-0.5 * (diff / float(medium_scale)) ** 2)
+    sigma_easy_hard = max(1e-6, t / 3.0)
+    sigma_medium = max(1e-6, t / 6.0)
+
+    # easy: 2 * exp(-(x^2) / (2 * (t/3)^2))
+    easy_reward = weights.len_mag * math.exp(-(x**2) / (2.0 * (sigma_easy_hard**2)))
+    # medium: 2 * exp(-0.5 * ((x - t/2)/(t/6))^2)
+    medium_reward = weights.len_mag * math.exp(-0.5 * (((x - t / 2.0) / sigma_medium) ** 2))
+    # hard: 2 * exp(-((x - t)^2) / (2 * (t/3)^2))
+    hard_reward = weights.len_mag * math.exp(-((x - t) ** 2) / (2.0 * (sigma_easy_hard**2)))
 
     if difficulty_level == "easy":
         r_len = easy_reward
-        ideal_len = 1
-        tolerance = target_len
+        ideal_len = 0
+        tolerance = sigma_easy_hard
     elif difficulty_level == "hard":
         r_len = hard_reward
-        ideal_len = target_len
-        tolerance = target_len
+        ideal_len = t
+        tolerance = sigma_easy_hard
     else:
         r_len = medium_reward
-        ideal_len = target_len
-        tolerance = medium_scale
+        ideal_len = t / 2.0
+        tolerance = sigma_medium
 
     return r_len, {
         "mode": difficulty_level,
         "ideal_token_len": int(ideal_len),
-        "tolerance_token_len": int(tolerance),
-        "target_token_len": int(target_len),
+        "tolerance_token_len": int(max(1, round(tolerance))),
+        "target_token_len": int(t),
+        "x_token_len": int(x),
+        "easy_score": float(easy_reward),
+        "medium_score": float(medium_reward),
+        "hard_score": float(hard_reward),
     }
 
 
@@ -278,6 +284,11 @@ def compute_score(
     weights: Optional[ScoreWeights] = None,
     return_breakdown: bool = False,
 ) -> Any:
+
+    # TODO:
+    # [] 先用DAtaSQL，infer一下把训练数据的SQL执行计算执行时间以及把超时报错的删了
+    # [] 完善代码的训练逻辑
+
     """Compute reward = format + label(softmax) + llm + length.
 
     Priority:
@@ -285,9 +296,9 @@ def compute_score(
     2) Label reward: softmax margin over YES/NO probabilities.
     3) LLM reward: call OpenAI-compatible API, judge score in [0,10].
     4) Length reward (all lengths are token lengths):
-       - easy: shorter is better
-       - medium: closer to medium_len is better (absolute-value deviation)
-       - hard: longer is better
+       - easy: shorter is better (gaussian centered at 0)
+       - medium: medium length is best (gaussian centered at medium_len / 2)
+       - hard: longer is better (gaussian centered at medium_len)
 
     Total score is clipped to [0, 10].
     """
@@ -473,6 +484,8 @@ key_points: {key_points}"""
     summary = {
         "total_score": total,
         "total_score_raw": total_raw,
+        "difficulty_level": difficulty_level,
+        "judge_model_json": llm_result,
         "detail_score": {
             "r_format": r_format,
             "r_label": r_label,
@@ -504,6 +517,8 @@ key_points: {key_points}"""
         "label": float(r_label),
         "llm": float(r_llm),
         "length": float(r_len),
+        "difficulty_level": difficulty_level,
+        "judge_model_json": llm_result,
         "meta": {
             "strict_ok": bool(strict_ok),
             "pred": pred,
@@ -643,6 +658,8 @@ CREATE TABLE `schools` (
     )
     print("provided_case_question:", sample_question)
     print("final_total_score:", provided_case["total"])
+    print("difficulty_level:", provided_case["difficulty_level"])
+    print("judge_model_json:", json.dumps(provided_case["judge_model_json"], ensure_ascii=False))
     print(
         "final_detail_scores:",
         {
@@ -652,4 +669,5 @@ CREATE TABLE `schools` (
             "length": provided_case["length"],
         },
     )
+    print(len(sample_out))
     # print(json.dumps(provided_case, ensure_ascii=False, indent=2))
