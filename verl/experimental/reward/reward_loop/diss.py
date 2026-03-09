@@ -54,6 +54,11 @@ class DissRewardLoopManager(RewardLoopManagerBase):
                 model_output=response_str,
                 gold_label=ground_truth,
                 resp_len=len(valid_response_ids),
+                reference_sql=extra_info.get("reference_sql", None),
+                predicted_sql=extra_info.get("predicted_sql", None),
+                schema=extra_info.get("schema", None),
+                llm_extra_context=extra_info.get("llm_extra_context", None),
+                return_breakdown=True
             )
         else:
             result = await self.loop.run_in_executor(
@@ -61,7 +66,12 @@ class DissRewardLoopManager(RewardLoopManagerBase):
                 lambda: self.compute_score(
                     model_output=response_str,
                     gold_label=ground_truth,
-                    resp_len=len(valid_response_ids)
+                    resp_len=len(valid_response_ids),
+                    reference_sql=extra_info.get("reference_sql", None),
+                    predicted_sql=extra_info.get("predicted_sql", None),
+                    schema=extra_info.get("schema", None),
+                    llm_extra_context=extra_info.get("llm_extra_context", None),
+                    return_breakdown=True
                 ),
             )
 

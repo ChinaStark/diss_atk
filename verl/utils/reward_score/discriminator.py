@@ -269,8 +269,6 @@ def compute_score(
     model_output: str,
     gold_label: int,
     resp_token_len: int,
-    # Backward-compat only. Ignored.
-    L: Optional[int] = None,
     # required: pass as (yes_prob, no_prob), then we apply softmax and compute margin.
     yes_no_probs: Optional[Tuple[float, float]] = None,
     # llm_extra_context supports per-step params:
@@ -281,13 +279,15 @@ def compute_score(
     predicted_sql: Optional[str] = None,
     schema: Optional[str] = None,
     llm_extra_context: Optional[dict[str, Any]] = None,
-    weights: Optional[ScoreWeights] = None,
     return_breakdown: bool = False,
 ) -> Any:
 
     # TODO:
-    # [] 先用DAtaSQL，infer一下把训练数据的SQL执行计算执行时间以及把超时报错的删了
-    # [] 完善代码的训练逻辑
+    # ✅️ 先用DAtaSQL，infer一下把训练数据的SQL执行计算执行时间以及把超时报错的删了
+    # ✅️ 完善代码的训练逻辑
+    # [] 完善prompt。
+    # [] 构建数据集
+    # ✅️ 测出平局token 难度
 
     """Compute reward = format + label(softmax) + llm + length.
 
@@ -303,10 +303,7 @@ def compute_score(
 
     Total score is clipped to [0, 10].
     """
-    if weights is None:
-        weights = ScoreWeights()
-
-    _ = L
+    weights = ScoreWeights()
     resp_token_len = int(resp_token_len)
     gold = "YES" if gold_label == 1 else "NO"
 
