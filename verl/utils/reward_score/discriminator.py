@@ -299,6 +299,7 @@ def compute_score(
        - easy: shorter is better (gaussian centered at 0)
        - medium: medium length is best (gaussian centered at medium_len / 2)
        - hard: longer is better (gaussian centered at medium_len)
+       - length reward is enabled only when LLM reward equals 2.0
 
     Total score is clipped to [0, 10].
     """
@@ -473,7 +474,13 @@ key_points: {key_points}"""
             raise ValueError(f"Invalid difficulty '{llm_difficulty_value}', expected easy/medium/hard")
         difficulty_source = "llm"
 
-    r_len, len_meta = _compute_length_reward(resp_token_len=resp_token_len, difficulty_level=difficulty_level, weights=weights)
+    r_len_raw, len_meta = _compute_length_reward(resp_token_len=resp_token_len, difficulty_level=difficulty_level, weights=weights)
+    len_reward_enabled = math.isclose(r_llm, 2.0, rel_tol=0.0, abs_tol=1e-8)
+    r_len = r_len_raw if len_reward_enabled else 0.0
+    len_meta["enabled"] = bool(len_reward_enabled)
+    len_meta["raw_len_score"] = float(r_len_raw)
+    len_meta["applied_len_score"] = float(r_len)
+    len_meta["len_reward_gate_llm_score"] = 2.0
     ideal_token_len = int(len_meta["ideal_token_len"])
     tolerance_token_len = int(len_meta["tolerance_token_len"])
     length_mode = str(len_meta["mode"])
