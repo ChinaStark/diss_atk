@@ -391,14 +391,60 @@ def compute_score(
         shared_max_tokens = llm_ctx.get("max_tokens")
         rubric_max_tokens = llm_ctx.get("rubric_max_tokens", shared_max_tokens)
         judge_max_tokens = llm_ctx.get("judge_max_tokens", shared_max_tokens)
+        user_question = (
+            llm_ctx.get("question")
+            or llm_ctx.get("user_question")
+            or llm_ctx.get("nl_question")
+            or llm_ctx.get("query")
+            or ""
+        )
 
-        rubric_user_prompt = f"""Build rubric and key_points for SQL evaluation.
-Return JSON only with keys: rubric, key_points.
-gold_label: {gold_label}
-model_output: {text}
-reference_sql: {reference_sql}
-predicted_sql: {predicted_sql}
-schema: {schema}"""
+        rubric_user_prompt = f"""You are an expert NL2SQL rubric writer.
+Generate a self-contained rubric for evaluating whether predicted_sql correctly answers the user's NL2SQL intent under this schema.
+When writing scoring criteria, explicitly ground them in:
+1) the reference sql (Reference_sql)
+2) the user question (User_question).
+
+## Model_output: 
+{text}
+
+## Reference_sql: 
+{reference_sql}
+
+## Predicted_sql: 
+{predicted_sql}
+
+## Schema: 
+{schema}
+
+## User_question: 
+{user_question}
+
+## NL2SQL rubric focus:
+- Semantic correctness against the user intent (not only SQL syntax).
+- Correct schema grounding: tables/columns exist and are used correctly; no hallucinated fields.
+- Correct logic: filters, joins, aggregation, GROUP BY/HAVING, ORDER BY, LIMIT/TOP, DISTINCT.
+- Correct value constraints: constants, ranges, date/time handling, units, inclusivity/exclusivity.
+- Correct result shape: selected columns, granularity, ordering, and cardinality.
+- Common pitfalls: missing key filters, wrong join keys causing duplication/drop, wrong aggregation level, unrelated row leakage.
+- Consistency with verdict: include criteria connecting SQL quality and <answer>YES|NO when relevant.
+- Keep criteria concise and self-contained; do not copy large raw blocks from inputs.
+
+## Output format requirements:
+1) Return a JSON object with exactly two top-level keys: rubric, key_points.
+2) rubric must be a JSON array with 7-20 items (choose by complexity).
+3) Each rubric item must contain exactly three keys: title, description, weight.
+4) title must be 2-4 words.
+5) description must be one sentence and start with exactly one prefix:
+   - Essential Criteria:
+   - Important Criteria:
+   - Optional Criteria:
+   - Pitfall Criteria: Does not ...
+   - Pitfall Criteria: Recommends ...
+6) Weight rules:
+   - Essential/Important/Optional: integer 1-5 (Essential usually 5, Important usually 3-4, Optional usually 1-2).
+   - Pitfall: -1 or -2.
+7) No extra keys are allowed in each rubric item."""
         rubric_raw = _call_llm(
             user_prompt=rubric_user_prompt,
             system_prompt=_RUBRIC_SYSTEM_PROMPT,
@@ -413,17 +459,38 @@ schema: {schema}"""
         rubric = rubric_result.get("rubric")
         key_points = rubric_result.get("key_points")
 
-        judge_user_prompt = f"""Judge predicted_sql with rubric and key_points.
-Return JSON only with keys: score, difficulty, reason.
-difficulty must be one of: easy, medium, hard.
-score must be in [0, 10].
-gold_label: {gold_label}
+        judge_user_prompt = f"""gold_label: {gold_label}
+user_question: {user_question}
 model_output: {text}
 reference_sql: {reference_sql}
 predicted_sql: {predicted_sql}
 schema: {schema}
 rubric: {rubric}
-key_points: {key_points}"""
+key_points: {key_points}
+
+You are an expert NL2SQL evaluator.
+Given the user question and the model's SQL response, rate overall response quality from 1 to 10.
+Use rubric and key_points as primary criteria, and use reference_sql as golden guidance (not necessarily exhaustive).
+Focus on semantic correctness, schema grounding, SQL logic correctness, and result alignment with user intent.
+
+Scoring anchors:
+- 1-2: response is mostly incorrect or irrelevant to the NL2SQL task.
+- 3-4: severe logical/schema errors; intent is largely unmet.
+- 5-6: partially correct intent coverage with notable SQL mistakes.
+- 7-8: mostly correct SQL with minor issues.
+- 9-10: fully correct or near-perfect SQL aligned with intent and schema.
+
+Determine difficulty based on question/SQL complexity:
+- easy: simple single-table lookup/filter or straightforward aggregation.
+- medium: moderate joins/aggregation/conditions.
+- hard: complex multi-step logic, nested queries, advanced grouping/window logic, or tricky constraints.
+
+Output format requirements:
+1) Return a JSON object only (no markdown, no extra text).
+2) JSON must contain exactly three keys: score, difficulty, reason.
+3) score must be an integer in [1, 10].
+4) difficulty must be one of: easy, medium, hard.
+5) reason must be concise (1-3 sentences) and cite key evidence from rubric-based evaluation."""
         judge_raw = _call_llm(
             user_prompt=judge_user_prompt,
             system_prompt=_JUDGE_SYSTEM_PROMPT,
