@@ -288,6 +288,13 @@ def compute_score(
     # [] 完善prompt。
     # [] 构建数据集
     # ✅️ 测出平局token 难度
+    """
+    difficulty              count          avg       median
+    --------------------------------------------------------
+    challenging               145     435.1517     408.0000
+    moderate                  464     365.2047     357.0000
+    simple                    925     310.7924     298.0000
+    """
 
     """Compute reward = format + label(softmax) + llm + length.
 
