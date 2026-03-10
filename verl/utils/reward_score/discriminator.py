@@ -21,20 +21,17 @@ _ANSWER_TAG = re.compile(r"<answer>\s*(?P<ans>[\s\S]*?)\s*</answer>", flags=re.I
 _THINK_TAG = re.compile(r"<think>\s*(?P<think>[\s\S]*?)\s*</think>", flags=re.IGNORECASE)
 
 # LLM prompts are intentionally fixed in this file.
-_RUBRIC_SYSTEM_PROMPT = f"""You are a strict SQL evaluator. Return valid JSON only."""
-_JUDGE_SYSTEM_PROMPT = f"""You are a strict SQL evaluator. Return valid JSON only."""
+# _JUDGE_SYSTEM_PROMPT = f"""You are a strict SQL evaluator. Return valid JSON only."""
 _DIFFICULTY_LEVELS = {"easy", "medium", "hard"}
 
 
-class _RubricResponse(BaseModel):
-    rubric: Any
-    key_points: Any
-
-
-class _JudgeResponse(BaseModel):
+class _JudgeScoreResponse(BaseModel):
     score: float
-    difficulty: Literal["easy", "medium", "hard"]
     reason: str
+
+
+class _DifficultyResponse(BaseModel):
+    difficulty: Literal["easy", "medium", "hard"]
 
 
 def _split_assistant(solution_str: str) -> Tuple[Optional[str], str]:
@@ -84,7 +81,7 @@ class ScoreWeights:
     llm_reward_mag: float = 2.0
 
     # 4) length reward in token-length space (difficulty level: easy/medium/hard)
-    medium_len: int = 2048  # base length t used by gaussian length rewards
+    medium_len: int = 1024  # base length t used by gaussian length rewards
     len_tolerance_ratio: float = 0.5
     len_mag: float = 2.0
 
@@ -95,6 +92,8 @@ class VLLMOpenAIConfig:
     api_key: Optional[str] = os.getenv("VLLM_API_KEY", os.getenv("DASHSCOPE_API_KEY"))
     model: str = os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))
     timeout_s: int = 60
+    timeout_retries: int = 2
+    timeout_retry_backoff_s: float = 1.0
     max_tokens: int = 1024
     temperature: float = 0.0
     top_p: float = 0.95
@@ -169,7 +168,6 @@ def _call_llm(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_prompt})
-
     payload: dict[str, Any] = {"messages": messages}
     if temperature is not None:
         payload["temperature"] = float(temperature)
@@ -191,6 +189,8 @@ def _call_llm(
         api_key=vllm_cfg_raw.get("api_key", "sk-6702e7de01c84cb88059105db0205e63"),
         model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))),
         timeout_s=int(vllm_cfg_raw.get("timeout_s", 60)),
+        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 2)),
+        timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 1.0)),
         max_tokens=int(vllm_cfg_raw.get("max_tokens", 2048)),
         temperature=float(vllm_cfg_raw.get("temperature", 0.0)),
         top_p=float(vllm_cfg_raw.get("top_p", 0.95)),
@@ -220,6 +220,7 @@ def _call_llm(
         headers["Authorization"] = f"Bearer {cfg.api_key}"
 
     import requests
+    import time
 
     base = cfg.base_url.rstrip("/")
     if base.endswith("/chat/completions"):
@@ -228,13 +229,36 @@ def _call_llm(
         url = base + "/chat/completions"
     else:
         url = base + "/v1/chat/completions"
-    response = requests.post(
-        url,
-        headers=headers,
-        json=request_payload,
-        timeout=cfg.timeout_s,
-        proxies={"http": None, "https": None},
-    )
+    max_attempts = max(1, 1 + int(cfg.timeout_retries))
+    backoff_s = max(0.0, float(cfg.timeout_retry_backoff_s))
+    response = None
+    for attempt in range(max_attempts):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=request_payload,
+                timeout=cfg.timeout_s,
+                proxies={"http": None, "https": None},
+            )
+            break
+        except requests.exceptions.Timeout as exc:
+            if attempt == max_attempts - 1:
+                raise TimeoutError(
+                    f"LLM request timed out after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
+                ) from exc
+            wait_s = backoff_s * (2**attempt)
+            logging.getLogger("score_logger").warning(
+                "LLM timeout on attempt %d/%d, retrying in %.2fs",
+                attempt + 1,
+                max_attempts,
+                wait_s,
+            )
+            time.sleep(wait_s)
+
+    if response is None:
+        raise RuntimeError("LLM request failed before receiving a response.")
+
     response.raise_for_status()
     data = response.json()
     message = data["choices"][0]["message"]
@@ -272,12 +296,13 @@ def compute_score(
     # required: pass as (yes_prob, no_prob), then we apply softmax and compute margin.
     yes_no_probs: Optional[Tuple[float, float]] = None,
     # llm_extra_context supports per-step params:
-    # temperature/rubric_temperature/judge_temperature,
-    # top_p/rubric_top_p/judge_top_p,
-    # max_tokens/rubric_max_tokens/judge_max_tokens.
+    # temperature/judge_temperature/difficulty_temperature,
+    # top_p/judge_top_p/difficulty_top_p,
+    # max_tokens/judge_max_tokens/difficulty_max_tokens.
     reference_sql: Optional[str] = None,
     predicted_sql: Optional[str] = None,
     schema: Optional[str] = None,
+    user_question: Optional[str] = None,
     llm_extra_context: Optional[dict[str, Any]] = None,
     return_breakdown: bool = False,
 ) -> Any:
@@ -285,7 +310,7 @@ def compute_score(
     # TODO:
     # ✅️ 先用DAtaSQL，infer一下把训练数据的SQL执行计算执行时间以及把超时报错的删了
     # ✅️ 完善代码的训练逻辑
-    # [] 完善prompt。
+    # ✅️ 完善prompt。
     # [] 构建数据集
     # ✅️ 测出平局token 难度
     """
@@ -306,7 +331,7 @@ def compute_score(
        - easy: shorter is better (gaussian centered at 0)
        - medium: medium length is best (gaussian centered at medium_len / 2)
        - hard: longer is better (gaussian centered at medium_len)
-       - length reward is enabled only when LLM reward equals 2.0
+       - length reward is enabled only when (2.0 - r_llm) >= 1.0
 
     Total score is clipped to [0, 10].
     """
@@ -358,8 +383,6 @@ def compute_score(
     # 3) LLM score
     # -------------------------
     llm_result = {
-        "rubric": None,
-        "key_points": None,
         "score": None,
         "difficulty": None,
         "reason": None,
@@ -377,146 +400,106 @@ def compute_score(
         raise ValueError(f"Missing required fields for LLM judging: {', '.join(missing_fields)}")
 
     if not missing_fields:
-        # Rubric and judge differ only in prompt and call params.
         llm_ctx = llm_extra_context or {}
 
         shared_temperature = llm_ctx.get("temperature")
-        rubric_temperature = llm_ctx.get("rubric_temperature", shared_temperature)
         judge_temperature = llm_ctx.get("judge_temperature", shared_temperature)
+        difficulty_temperature = llm_ctx.get("difficulty_temperature", shared_temperature)
 
         shared_top_p = llm_ctx.get("top_p")
-        rubric_top_p = llm_ctx.get("rubric_top_p", shared_top_p)
         judge_top_p = llm_ctx.get("judge_top_p", shared_top_p)
+        difficulty_top_p = llm_ctx.get("difficulty_top_p", shared_top_p)
 
         shared_max_tokens = llm_ctx.get("max_tokens")
-        rubric_max_tokens = llm_ctx.get("rubric_max_tokens", shared_max_tokens)
         judge_max_tokens = llm_ctx.get("judge_max_tokens", shared_max_tokens)
-        user_question = (
-            llm_ctx.get("question")
-            or llm_ctx.get("user_question")
-            or llm_ctx.get("nl_question")
-            or llm_ctx.get("query")
-            or ""
-        )
+        difficulty_max_tokens = llm_ctx.get("difficulty_max_tokens", shared_max_tokens)
 
-        rubric_user_prompt = f"""You are an expert NL2SQL rubric writer.
-Generate a self-contained rubric for evaluating whether predicted_sql correctly answers the user's NL2SQL intent under this schema.
-When writing scoring criteria, explicitly ground them in:
-1) the reference sql (Reference_sql)
-2) the user question (User_question).
+        judge_user_prompt = f"""You are an expert evaluator for NL2SQL consistency-judgment reasoning.
+Your task is to score the quality of the model_output, where model_output is a judge model's reasoning about:
+"Does predicted_sql correctly answer user_question under this schema?"
+Use Schema, User Question, Reference SQL (golden guidance), and Predicted SQL as evidence.
+Do not score by SQL style; score the judge model's reasoning process and quality.
 
-## Model_output: 
-{text}
+## User Question: {user_question}
+## Model Output: {text}
+## Reference SQL: {reference_sql}
+## Predicted SQL: {predicted_sql}
+## Schema: {schema}
 
-## Reference_sql: 
-{reference_sql}
+## Evaluation focus:
+- First determine the likely ground-truth consistency between predicted_sql and user_question (semantic match, schema grounding, filters/joins/aggregation/result shape).
+- Allow different valid SQL solutions: semantic equivalence is sufficient even when SQL form differs from reference_sql.
+- Do not penalize harmless formulation differences such as alias naming, join order, equivalent predicates, or equivalent subquery/aggregation rewrites.
+- Then evaluate whether model_output reasoning correctly identifies key evidence and reaches a justified YES/NO.
+- Check whether <answer>YES/NO is consistent with the reasoning in <think>.
+- Treat gold_label as a high-confidence supervision prior (assume it is usually correct); only override it when there is clear, strong, and specific evidence from user_question, schema, reference_sql, and predicted_sql.
+- Penalize missing critical evidence, hallucinated schema facts, logical contradictions, or unsupported conclusions.
 
-## Predicted_sql: 
-{predicted_sql}
-
-## Schema: 
-{schema}
-
-## User_question: 
-{user_question}
-
-## NL2SQL rubric focus:
-- Semantic correctness against the user intent (not only SQL syntax).
-- Correct schema grounding: tables/columns exist and are used correctly; no hallucinated fields.
-- Correct logic: filters, joins, aggregation, GROUP BY/HAVING, ORDER BY, LIMIT/TOP, DISTINCT.
-- Correct value constraints: constants, ranges, date/time handling, units, inclusivity/exclusivity.
-- Correct result shape: selected columns, granularity, ordering, and cardinality.
-- Common pitfalls: missing key filters, wrong join keys causing duplication/drop, wrong aggregation level, unrelated row leakage.
-- Consistency with verdict: include criteria connecting SQL quality and <answer>YES|NO when relevant.
-- Keep criteria concise and self-contained; do not copy large raw blocks from inputs.
+## Scoring anchors:
+- 1-2: reasoning is invalid/irrelevant.
+- 3-4: major reasoning flaws; key SQL-question mismatches are missed.
+- 5-6: partially correct reasoning but incomplete/weak justification, or minor verdict risk.
+- 7-8: mostly correct reasoning and verdict, with limited omissions.
+- 9-10: accurate, well-grounded reasoning with correct and fully justified verdict.
 
 ## Output format requirements:
-1) Return a JSON object with exactly two top-level keys: rubric, key_points.
-2) rubric must be a JSON array with 7-20 items (choose by complexity).
-3) Each rubric item must contain exactly three keys: title, description, weight.
-4) title must be 2-4 words.
-5) description must be one sentence and start with exactly one prefix:
-   - Essential Criteria:
-   - Important Criteria:
-   - Optional Criteria:
-   - Pitfall Criteria: Does not ...
-   - Pitfall Criteria: Recommends ...
-6) Weight rules:
-   - Essential/Important/Optional: integer 1-5 (Essential usually 5, Important usually 3-4, Optional usually 1-2).
-   - Pitfall: -1 or -2.
-7) No extra keys are allowed in each rubric item."""
-        rubric_raw = _call_llm(
-            user_prompt=rubric_user_prompt,
-            system_prompt=_RUBRIC_SYSTEM_PROMPT,
-            temperature=rubric_temperature,
-            top_p=rubric_top_p,
-            max_tokens=rubric_max_tokens,
-            response_schema_name="sql_rubric_response",
-            response_schema=_RubricResponse.model_json_schema(),
-            extra_context=llm_extra_context,
-        )
-        rubric_result = _llm_output_to_dict(rubric_raw)
-        rubric = rubric_result.get("rubric")
-        key_points = rubric_result.get("key_points")
-
-        judge_user_prompt = f"""gold_label: {gold_label}
-user_question: {user_question}
-model_output: {text}
-reference_sql: {reference_sql}
-predicted_sql: {predicted_sql}
-schema: {schema}
-rubric: {rubric}
-key_points: {key_points}
-
-You are an expert NL2SQL evaluator.
-Given the user question and the model's SQL response, rate overall response quality from 1 to 10.
-Use rubric and key_points as primary criteria, and use reference_sql as golden guidance (not necessarily exhaustive).
-Focus on semantic correctness, schema grounding, SQL logic correctness, and result alignment with user intent.
-
-Scoring anchors:
-- 1-2: response is mostly incorrect or irrelevant to the NL2SQL task.
-- 3-4: severe logical/schema errors; intent is largely unmet.
-- 5-6: partially correct intent coverage with notable SQL mistakes.
-- 7-8: mostly correct SQL with minor issues.
-- 9-10: fully correct or near-perfect SQL aligned with intent and schema.
-
-Determine difficulty based on question/SQL complexity:
-- easy: simple single-table lookup/filter or straightforward aggregation.
-- medium: moderate joins/aggregation/conditions.
-- hard: complex multi-step logic, nested queries, advanced grouping/window logic, or tricky constraints.
-
-Output format requirements:
 1) Return a JSON object only (no markdown, no extra text).
-2) JSON must contain exactly three keys: score, difficulty, reason.
+2) JSON must contain exactly two keys: score, reason.
 3) score must be an integer in [1, 10].
-4) difficulty must be one of: easy, medium, hard.
-5) reason must be concise (1-3 sentences) and cite key evidence from rubric-based evaluation."""
+4) reason must be concise (1-3 sentences) and cite key evidence from model_output plus SQL-question consistency analysis."""
         judge_raw = _call_llm(
             user_prompt=judge_user_prompt,
-            system_prompt=_JUDGE_SYSTEM_PROMPT,
             temperature=judge_temperature,
             top_p=judge_top_p,
             max_tokens=judge_max_tokens,
-            response_schema_name="sql_judge_response",
-            response_schema=_JudgeResponse.model_json_schema(),
+            response_schema_name="sql_judge_score_response",
+            response_schema=_JudgeScoreResponse.model_json_schema(),
             extra_context=llm_extra_context,
         )
-        judge_result = _llm_output_to_dict(judge_raw)
+        judge_score_result = _llm_output_to_dict(judge_raw)
+
+        difficulty_user_prompt = f"""You are an expert NL2SQL difficulty estimator.
+Estimate only the task complexity of judging whether Predicted SQL answers User Question under Schema.
+Do not score correctness, do not use gold_label, and do not include quality judgment.
+
+## User Question: {user_question}
+## Reference SQL: {reference_sql}
+## Predicted SQL: {predicted_sql}
+## Schema: {schema}
+
+Difficulty criteria:
+- Use semantic-consistency judgment effort (not SQL writing difficulty) to assign difficulty.
+- easy: one clear intent with direct mapping and low coupling (typical "simple" cases, e.g., highest-value lookup with straightforward target column retrieval).
+- medium: still one main intent, but requires one non-trivial semantic composition (e.g., entity condition + one join and/or derived metric computation) to verify alignment (typical "moderate" cases).
+- hard: multiple coupled intents/constraints that require end-to-end semantic validation across tables and result semantics (e.g., simultaneous checks on scope, grouping/aggregation granularity, and multi-part question requirements; typical "challenging" cases).
+
+Output format requirements:
+1) Return a JSON object only (no markdown, no extra text).
+2) JSON must contain exactly one key: difficulty.
+3) difficulty must be one of: easy, medium, hard."""
+        difficulty_raw = _call_llm(
+            user_prompt=difficulty_user_prompt,
+            temperature=difficulty_temperature,
+            top_p=difficulty_top_p,
+            max_tokens=difficulty_max_tokens,
+            response_schema_name="sql_difficulty_response",
+            response_schema=_DifficultyResponse.model_json_schema(),
+            extra_context=llm_extra_context,
+        )
+        difficulty_result = _llm_output_to_dict(difficulty_raw)
 
         llm_result = {
-            "rubric": rubric,
-            "key_points": key_points,
-            "score": judge_result.get("score"),
-            "difficulty": judge_result.get("difficulty"),
-            "reason": judge_result.get("reason"),
+            "score": judge_score_result.get("score"),
+            "difficulty": difficulty_result.get("difficulty"),
+            "reason": judge_score_result.get("reason"),
         }
         llm_meta.update(
             {
                 "enabled": True,
-                "rubric_raw": rubric_result,
-                "judge_raw": judge_result,
-                "rubric_reasoning": rubric_raw.get("reasoning"),
+                "judge_raw": judge_score_result,
                 "judge_reasoning": judge_raw.get("reasoning"),
+                "difficulty_raw": difficulty_result,
+                "difficulty_reasoning": difficulty_raw.get("reasoning"),
             }
         )
 
@@ -546,12 +529,13 @@ Output format requirements:
         difficulty_source = "llm"
 
     r_len_raw, len_meta = _compute_length_reward(resp_token_len=resp_token_len, difficulty_level=difficulty_level, weights=weights)
-    len_reward_enabled = math.isclose(r_llm, 2.0, rel_tol=0.0, abs_tol=1e-8)
+    len_reward_enabled = (2.0 - r_llm) <= 0.8
     r_len = r_len_raw if len_reward_enabled else 0.0
     len_meta["enabled"] = bool(len_reward_enabled)
     len_meta["raw_len_score"] = float(r_len_raw)
     len_meta["applied_len_score"] = float(r_len)
-    len_meta["len_reward_gate_llm_score"] = 2.0
+    len_meta["len_reward_gate_rule"] = "2.0 - r_llm <= 0.8"
+    len_meta["len_reward_gate_margin"] = float(2.0 - r_llm)
     ideal_token_len = int(len_meta["ideal_token_len"])
     tolerance_token_len = int(len_meta["tolerance_token_len"])
     length_mode = str(len_meta["mode"])
@@ -732,6 +716,7 @@ CREATE TABLE `schools` (
         reference_sql=sample_answer_sql,
         predicted_sql=sample_answer_sql,
         schema=sample_schema,
+        user_question=sample_question,
         return_breakdown=True,
     )
     print("provided_case_question:", sample_question)
