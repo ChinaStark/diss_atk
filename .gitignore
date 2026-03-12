@@ -23,7 +23,7 @@ tensorflow/my_graph/*
 
 # autodl temp
 autodl-tmp/
-
+data/
 # Distribution / packaging
 .Python
 # env/
