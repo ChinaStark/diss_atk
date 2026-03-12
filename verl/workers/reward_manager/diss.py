@@ -76,6 +76,13 @@ class DissRewardManager(AbstractRewardManager):
                 model_output=response_str,
                 gold_label=ground_truth,
                 resp_len=len(valid_response_ids),
+                user_question=(
+                    extra_info.get("user_question")
+                    or extra_info.get("question")
+                    or extra_info.get("nl_question")
+                    or extra_info.get("query")
+                    or prompt_str
+                ),
             )
 
             if isinstance(score, dict):
