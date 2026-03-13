@@ -5,7 +5,7 @@ from collections import defaultdict
 from itertools import combinations
 from pathlib import Path
 from typing import Any
-
+import pdb 
 
 SCHEMA_PATTERN = re.compile(
     r"Database Schema:\s*(.*?)\s*This schema describes the database's structure",
@@ -85,6 +85,7 @@ def process_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
 
     for raw in items:
+        pdb.set_trace()
         correctness = to_int(raw.get("correctness"))
         if correctness in (2, 3):
             continue
@@ -96,10 +97,12 @@ def process_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item["ground_truth_sql_sfx"] = sql_sfx(item.get("ground_truth"))
 
         grouped[group_key(item)].append(item)
-
+    
+    
     output_pairs: list[dict[str, Any]] = []
 
     for _, group_items in grouped.items():
+        pdb.set_trace()
         deduped = dedup_group_items(group_items)
         pos = [x for x in deduped if x.get("correctness") == 1]
         neg = [x for x in deduped if x.get("correctness") == 0]
@@ -131,7 +134,7 @@ def main() -> None:
 
     with input_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
-
+    print("loaded data items:", len(data))
     if not isinstance(data, list):
         raise ValueError(f"Input must be a JSON list, got: {type(data).__name__}")
 
