@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default=os.getenv("QWEN_EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B"),
+        default=os.getenv("QWEN_EMBED_MODEL", "Qwen/Qwen3-Embedding-4B"),
         help="Local model path or HuggingFace model id.",
     )
     parser.add_argument("--batch-size", type=int, default=32, help="Local embedding batch size.")
