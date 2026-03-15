@@ -52,17 +52,13 @@ class DissRewardLoopManager(RewardLoopManagerBase):
         if self.is_async_reward_score:
             result = await self.compute_score(
                 model_output=response_str,
-                gold_label=ground_truth,
+                yes_no_prob=None,
+                gold_label=extra_info.get("gold_label", None),
                 resp_len=len(valid_response_ids),
-                reference_sql=extra_info.get("reference_sql", None),
                 predicted_sql=extra_info.get("predicted_sql", None),
                 schema=extra_info.get("schema", None),
                 user_question=extra_info.get("user_question"),
                 llm_extra_context=extra_info.get("llm_extra_context", None),
-                # llm_extra_context supports per-step params:
-                # temperature/judge_temperature/difficulty_temperature,
-                # top_p/judge_top_p/difficulty_top_p,
-                # max_tokens/judge_max_tokens/difficulty_max_tokens
                 return_breakdown=True
             )
         else:
@@ -70,17 +66,12 @@ class DissRewardLoopManager(RewardLoopManagerBase):
                 None,
                 lambda: self.compute_score(
                     model_output=response_str,
-                    gold_label=ground_truth,
+                    yes_no_prob=None,
+                    gold_label=extra_info.get("gold_label", None),
                     resp_len=len(valid_response_ids),
-                    reference_sql=extra_info.get("reference_sql", None),
                     predicted_sql=extra_info.get("predicted_sql", None),
                     schema=extra_info.get("schema", None),
-                    user_question=(
-                        extra_info.get("user_question")
-                        or extra_info.get("question")
-                        or extra_info.get("nl_question")
-                        or extra_info.get("query")
-                    ),
+                    user_question=extra_info.get("user_question"),
                     llm_extra_context=extra_info.get("llm_extra_context", None),
                     return_breakdown=True
                 ),

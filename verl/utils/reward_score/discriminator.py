@@ -299,7 +299,6 @@ def compute_score(
     # temperature/judge_temperature/difficulty_temperature,
     # top_p/judge_top_p/difficulty_top_p,
     # max_tokens/judge_max_tokens/difficulty_max_tokens.
-    reference_sql: Optional[str] = None,
     predicted_sql: Optional[str] = None,
     schema: Optional[str] = None,
     user_question: Optional[str] = None,
@@ -311,7 +310,7 @@ def compute_score(
     # ✅️ 先用DAtaSQL，infer一下把训练数据的SQL执行计算执行时间以及把超时报错的删了
     # ✅️ 完善代码的训练逻辑
     # ✅️ 完善prompt。
-    # [] 构建数据集
+    # ✅️ 构建数据集
     # ✅️ 测出平局token 难度
     """
     difficulty              count          avg       median

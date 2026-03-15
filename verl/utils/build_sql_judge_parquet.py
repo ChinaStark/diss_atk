@@ -8,6 +8,40 @@ from typing import Any
 import datasets
 
 
+SQL_CHECK_PROMPT = """Task Overview:
+You are a data science expert. Below, you are provided with a database schema, natural language question and a SQL query written by the developer. Your task is to understand the schema and determine whether the SQL query written by the developer can correctly answer the natural language question.
+
+Database Engine:
+SQLite
+
+Database Schema:
+{{SCHEMA}}
+This schema describes the database's structure, including tables, columns, primary keys, foreign keys, and any relevant relationships or constraints.
+
+User Question:
+{{QUESTION}}
+
+Developer SQL:
+{{FILTER_SQL}}
+
+Instructions:
+- First, carefully understand the question and identify exactly what information the question expects (columns, filters, aggregations, ordering, limit, and any other constraints).
+- Then, analyze the provided SQL and determine whether it returns exactly what the question asks for — no more, no less.
+- Even small mismatches should be considered incorrect (e.g., extra columns, missing filters, wrong table joins, wrong ordering, wrong limit, wrong logic, not null, etc.).
+- Note that while the reasoning process and you decision need to be enclosed within <think> </think> and <answer> </answer> tags respectively, this should not affect the quality of you decision.
+
+Output format Example:
+<think>
+(Your step-by-step reasoning in natural language here)
+</think>
+<answer>
+YES or NO
+</answer>
+
+Take a deep breath and think step by step to make important decision.
+"""
+
+
 def parse_label(value: Any) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -16,70 +50,38 @@ def parse_label(value: Any) -> int:
             return value
         raise ValueError(f"label must be 0/1, got {value}")
     if isinstance(value, str):
-        value = value.strip()
-        if value in ("0", "1"):
-            return int(value)
+        text = value.strip()
+        if text in ("0", "1"):
+            return int(text)
     raise ValueError(f"invalid label value: {value}")
 
 
-def build_user_prompt(
-    *,
-    user_question: str,
-    schema: str,
-    reference_sql: str,
-    predicted_sql: str,
-) -> str:
-    return f"""You are a strict SQL semantic judge.
-Given a user question, a database schema, a reference SQL, and a candidate SQL.
-Decide whether the candidate SQL can correctly answer the user question under the schema.
-Semantic equivalence is valid even if SQL forms are different.
-
-Output only one final tag:
-<answer>YES</answer> or <answer>NO</answer>
-
-User Question:
-{user_question}
-
-Reference SQL:
-{reference_sql}
-
-Candidate SQL:
-{predicted_sql}
-
-Database Schema:
-{schema}
-"""
+def render_sql_check_prompt(schema: str, question: str, predicted_sql: str) -> str:
+    return (
+        SQL_CHECK_PROMPT.replace("{{SCHEMA}}", schema)
+        .replace("{{QUESTION}}", question)
+        .replace("{{FILTER_SQL}}", predicted_sql)
+    )
 
 
-def build_one_row(
-    *,
-    data_source: str,
-    pair_index: int,
-    row_index: int,
-    pair_type: str,
-    user_question: str,
-    schema: str,
-    reference_sql: str,
-    predicted_sql: str,
-    gold_label: int,
-    db_file: str,
-) -> dict[str, Any]:
-    prompt_text = build_user_prompt(
-        user_question=user_question,
+def build_one_row(*, item: dict[str, Any], row_index: int, data_source: str) -> dict[str, Any]:
+    predicted_sql = str(item["sql"]).strip()
+    schema = str(item["schema"]).strip()
+    user_question = str(item["question"]).strip()
+    gold_label = parse_label(item["label"])
+    db_file = str(item["db_file"]).strip()
+
+    prompt_text = render_sql_check_prompt(
         schema=schema,
-        reference_sql=reference_sql,
+        question=user_question,
         predicted_sql=predicted_sql,
     )
 
     extra_info = {
-        "index": row_index,
-        "pair_index": pair_index,
-        "pair_type": pair_type,
-        "reference_sql": reference_sql,
+        "gold_label": gold_label,
         "predicted_sql": predicted_sql,
         "schema": schema,
         "user_question": user_question,
-        "gold_label": gold_label,
     }
 
     return {
@@ -88,66 +90,21 @@ def build_one_row(
         "label": gold_label,
         "ability": "sql",
         "db_file": db_file,
+        "exec_idx": item["exec_idx"],
         "extra_info": extra_info,
+        "ground_truth": item["ground_truth"],
+        "sample_rule": item["sample_rule"],
+        "embed_similarity": item["embed_similarity"],
+        "type": item["type"],
     }
 
 
-def build_rows_from_pairs(
-    pairs: list[dict[str, Any]],
-    *,
-    data_source: str,
-    pos_pos_both: bool,
-) -> list[dict[str, Any]]:
+def build_rows_from_items(items: list[dict[str, Any]], *, data_source: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    row_index = 0
-
-    for pair_index, item in enumerate(pairs):
+    for row_index, item in enumerate(items):
         if not isinstance(item, dict):
             continue
-
-        pair_type = str(item.get("type", "")).strip()
-        user_question = str(item.get("question", "")).strip()
-        schema = str(item.get("schema", "")).strip()
-        sql1 = str(item.get("sql1", "")).strip()
-        sql2 = str(item.get("sql2", "")).strip()
-        db_file = str(item.get("db_file", "")).strip()
-
-        if not user_question or not schema or not sql1 or not sql2:
-            continue
-
-        if pair_type == "pos_neg":
-            configs = [
-                (sql1, 1),
-                (sql2, 0),
-            ]
-        elif pair_type == "pos_pos":
-            configs = [(sql2, 1)]
-            if pos_pos_both:
-                configs = [
-                    (sql1, 1),
-                    (sql2, 1),
-                ]
-        else:
-            pair_label = parse_label(item.get("label"))
-            configs = [(sql2, pair_label)]
-
-        for predicted_sql, gold_label in configs:
-            rows.append(
-                build_one_row(
-                    data_source=data_source,
-                    pair_index=pair_index,
-                    row_index=row_index,
-                    pair_type=pair_type,
-                    user_question=user_question,
-                    schema=schema,
-                    reference_sql=sql1,
-                    predicted_sql=predicted_sql,
-                    gold_label=gold_label,
-                    db_file=db_file,
-                )
-            )
-            row_index += 1
-
+        rows.append(build_one_row(item=item, row_index=row_index, data_source=data_source))
     return rows
 
 
@@ -198,16 +155,11 @@ def label_stats(rows: list[dict[str, Any]]) -> tuple[int, int]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build train/test parquet for SQL semantic judge.")
-    parser.add_argument("--input", type=str, required=True, help="Input pair JSON path.")
+    parser.add_argument("--input", type=str, required=True, help="Input JSON path (single-item SQL records).")
     parser.add_argument("--output-dir", type=str, required=True, help="Output directory containing train/test parquet.")
-    parser.add_argument("--test-ratio", type=float, default=0.1, help="Test split ratio in [0, 1).")
+    parser.add_argument("--test-ratio", type=float, default=0.0, help="Test split ratio in [0, 1).")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for train/test split.")
-    parser.add_argument("--data-source", type=str, default="sql_judge_pairs", help="data_source field value.")
-    parser.add_argument(
-        "--pos-pos-both",
-        action="store_true",
-        help="If set, pos_pos pair emits two positive rows (sql1 and sql2).",
-    )
+    parser.add_argument("--data-source", type=str, default="sql_judge_single_items", help="data_source field value.")
     parser.add_argument("--indent", type=int, default=2, help="Indent for example json outputs.")
     return parser.parse_args()
 
@@ -219,17 +171,13 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with input_path.open("r", encoding="utf-8-sig") as f:
-        pairs = json.load(f)
-    if not isinstance(pairs, list):
-        raise ValueError(f"input must be a JSON list, got {type(pairs).__name__}")
+        items = json.load(f)
+    if not isinstance(items, list):
+        raise ValueError(f"input must be a JSON list, got {type(items).__name__}")
 
-    rows = build_rows_from_pairs(
-        pairs,
-        data_source=args.data_source,
-        pos_pos_both=args.pos_pos_both,
-    )
+    rows = build_rows_from_items(items, data_source=args.data_source)
     if not rows:
-        raise ValueError("no valid rows generated from input pairs")
+        raise ValueError("no valid rows generated from input")
 
     train_rows, test_rows = split_rows(rows, test_ratio=args.test_ratio, seed=args.seed)
 
@@ -242,7 +190,7 @@ def main() -> None:
 
     train_pos, train_neg = label_stats(train_rows)
     test_pos, test_neg = label_stats(test_rows)
-    print(f"input_pairs={len(pairs)} expanded_rows={len(rows)}")
+    print(f"input_items={len(items)} rows={len(rows)}")
     print(f"train={len(train_rows)} (pos={train_pos}, neg={train_neg}) -> {train_path}")
     print(f"test={len(test_rows)} (pos={test_pos}, neg={test_neg}) -> {test_path}")
 
