@@ -20,6 +20,7 @@ class DissRewardLoopManager(RewardLoopManagerBase):
     async def run_single(self, data: DataProto) -> dict:
         assert len(data) == 1, "Only support single data item"
         data_item = data[0]
+        # TODO: 这里可以添加打印看看怎么拿到中间的输出也就是YES 和NO的概率分布数据
         response_ids = data_item.batch["responses"]
         response_length = response_ids.shape[-1]
         valid_response_length = data_item.batch["attention_mask"][-response_length:].sum()

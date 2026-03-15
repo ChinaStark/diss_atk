@@ -1,0 +1,22 @@
+{
+  "data_source": "sql_judge_pairs",
+  "prompt": [
+    {
+      "role": "user",
+      "content": "You are a strict SQL semantic judge.\nGiven a user question, a database schema, a reference SQL, and a candidate SQL.\nDecide whether the candidate SQL can correctly answer the user question under the schema.\nSemantic equivalence is valid even if SQL forms are different.\n\nOutput only one final tag:\n<answer>YES</answer> or <answer>NO</answer>\n\nUser Question:\nWhat is the maximum value of a?\n\nReference SQL:\nSELECT MAX(a) FROM t\n\nCandidate SQL:\nSELECT MAX(a) FROM t\n\nDatabase Schema:\nCREATE TABLE t (a INT);\n"
+    }
+  ],
+  "label": 1,
+  "ability": "sql",
+  "db_file": "toy.db",
+  "extra_info": {
+    "index": 0,
+    "pair_index": 0,
+    "pair_type": "pos_neg",
+    "reference_sql": "SELECT MAX(a) FROM t",
+    "predicted_sql": "SELECT MAX(a) FROM t",
+    "schema": "CREATE TABLE t (a INT);",
+    "user_question": "What is the maximum value of a?",
+    "gold_label": 1
+  }
+}
