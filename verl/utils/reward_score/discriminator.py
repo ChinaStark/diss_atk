@@ -299,6 +299,7 @@ def compute_score(
     # temperature/judge_temperature/difficulty_temperature,
     # top_p/judge_top_p/difficulty_top_p,
     # max_tokens/judge_max_tokens/difficulty_max_tokens.
+    reference_sql: Optional[str] = None,
     predicted_sql: Optional[str] = None,
     schema: Optional[str] = None,
     user_question: Optional[str] = None,
@@ -356,26 +357,27 @@ def compute_score(
     # -------------------------
     # 2) Label score
     # -------------------------
-    if yes_no_probs is None:
-        raise ValueError("yes_no_probs is required, expected (yes_prob, no_prob)")
-
-    label_meta: dict[str, Any] = {"source": "yes_no_probs"}
-    yes_prob = float(yes_no_probs[0])
-    no_prob = float(yes_no_probs[1])
-    p_yes, p_no = _softmax2(yes_prob, no_prob)
-    margin = (p_yes - p_no) if gold_label == 1 else (p_no - p_yes)
-    margin_pos = _clip(margin, 0.0, 1.0)
-    r_label = weights.label_softmax_mag * margin_pos
-    label_meta.update(
-        {
-            "yes_prob": yes_prob,
-            "no_prob": no_prob,
-            "p_yes": p_yes,
-            "p_no": p_no,
-            "margin": margin,
-            "margin_pos": margin_pos,
-        }
-    )
+    if yes_no_probs is not None:
+        label_meta: dict[str, Any] = {"source": "yes_no_probs"}
+        yes_prob = float(yes_no_probs[0])
+        no_prob = float(yes_no_probs[1])
+        p_yes, p_no = _softmax2(yes_prob, no_prob)
+        margin = (p_yes - p_no) if gold_label == 1 else (p_no - p_yes)
+        margin_pos = _clip(margin, 0.0, 1.0)
+        r_label = weights.label_softmax_mag * margin_pos
+        label_meta.update(
+            {
+                "yes_prob": yes_prob,
+                "no_prob": no_prob,
+                "p_yes": p_yes,
+                "p_no": p_no,
+                "margin": margin,
+                "margin_pos": margin_pos,
+            }
+        )
+    else:
+        label_meta = {"source": "margin"}
+        r_label = 1.0 if gold_label == 1 else 0
 
 
     # -------------------------
