@@ -305,6 +305,7 @@ def compute_score(
     user_question: Optional[str] = None,
     llm_extra_context: Optional[dict[str, Any]] = None,
     return_breakdown: bool = False,
+    **kwargs,
 ) -> Any:
 
     # TODO:
