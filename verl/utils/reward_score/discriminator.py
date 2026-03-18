@@ -292,7 +292,7 @@ def _llm_output_to_dict(raw: Any) -> dict[str, Any]:
 def compute_score(
     model_output: str,
     gold_label: int,
-    resp_token_len: int,
+    resp_len: int,
     # required: pass as (yes_prob, no_prob), then we apply softmax and compute margin.
     yes_no_prob: Optional[Tuple[float, float]] = None,
     # llm_extra_context supports per-step params:
