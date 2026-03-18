@@ -294,7 +294,7 @@ def compute_score(
     gold_label: int,
     resp_token_len: int,
     # required: pass as (yes_prob, no_prob), then we apply softmax and compute margin.
-    yes_no_probs: Optional[Tuple[float, float]] = None,
+    yes_no_prob: Optional[Tuple[float, float]] = None,
     # llm_extra_context supports per-step params:
     # temperature/judge_temperature/difficulty_temperature,
     # top_p/judge_top_p/difficulty_top_p,
@@ -305,6 +305,7 @@ def compute_score(
     user_question: Optional[str] = None,
     llm_extra_context: Optional[dict[str, Any]] = None,
     return_breakdown: bool = False,
+    **kwargs,
 ) -> Any:
 
     # TODO:
@@ -337,7 +338,6 @@ def compute_score(
     """
     weights = ScoreWeights()
     resp_token_len = int(resp_token_len)
-    gold = "YES" if gold_label == 1 else "NO"
 
     processed, err = _split_assistant(model_output)
     text = processed if processed is not None else model_output
@@ -585,7 +585,6 @@ Output format requirements:
         "meta": {
             "strict_ok": bool(strict_ok),
             "pred": pred,
-            "gold": gold,
             "token_len": int(resp_token_len),
             "header_error": err,
             "label_meta": label_meta,
@@ -713,7 +712,7 @@ CREATE TABLE `schools` (
         sample_out,
         gold_label=1,
         resp_token_len=len(sample_out),
-        yes_no_probs=(3.2, 0.3),
+        yes_no_prob=(3.2, 0.3),
         reference_sql=sample_answer_sql,
         predicted_sql=sample_answer_sql,
         schema=sample_schema,
