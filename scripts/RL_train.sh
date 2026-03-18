@@ -29,7 +29,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=23000\
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=40000\
     actor_rollout_ref.actor.use_dynamic_bsz=true\
     actor_rollout_ref.actor.ppo_mini_batch_size=8 \
     actor_rollout_ref.actor.use_kl_loss=True \
@@ -40,8 +40,8 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.ref.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=80000 \
-    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=80000\
+    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=120000 \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=120000\
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.65 \
