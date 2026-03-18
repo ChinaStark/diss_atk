@@ -337,7 +337,7 @@ def compute_score(
     Total score is clipped to [0, 10].
     """
     weights = ScoreWeights()
-    resp_token_len = int(resp_token_len)
+    resp_token_len = int(resp_len)
 
     processed, err = _split_assistant(model_output)
     text = processed if processed is not None else model_output
