@@ -357,10 +357,10 @@ def compute_score(
     # -------------------------
     # 2) Label score
     # -------------------------
-    if yes_no_probs is not None:
-        label_meta: dict[str, Any] = {"source": "yes_no_probs"}
-        yes_prob = float(yes_no_probs[0])
-        no_prob = float(yes_no_probs[1])
+    if yes_no_prob is not None:
+        label_meta: dict[str, Any] = {"source": "yes_no_prob"}
+        yes_prob = float(yes_no_prob[0])
+        no_prob = float(yes_no_prob[1])
         p_yes, p_no = _softmax2(yes_prob, no_prob)
         margin = (p_yes - p_no) if gold_label == 1 else (p_no - p_yes)
         margin_pos = _clip(margin, 0.0, 1.0)
