@@ -189,7 +189,7 @@ def _call_llm(
         api_key=vllm_cfg_raw.get("api_key", "sk-6702e7de01c84cb88059105db0205e63"),
         model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))),
         timeout_s=int(vllm_cfg_raw.get("timeout_s", 60)),
-        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 2)),
+        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 5)),
         timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 1.0)),
         max_tokens=int(vllm_cfg_raw.get("max_tokens", 2048)),
         temperature=float(vllm_cfg_raw.get("temperature", 0.0)),
