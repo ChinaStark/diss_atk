@@ -243,6 +243,9 @@ def _call_llm(
             )
             break
         except Exception as exc:
+            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>")
+            print("error", "attempt", attempt)
+            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<")
             if attempt == max_attempts - 1:
                 raise RuntimeError(
                     f"LLM request timed out after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
