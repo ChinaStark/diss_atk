@@ -242,9 +242,9 @@ def _call_llm(
                 proxies={"http": None, "https": None},
             )
             break
-        except requests.exceptions.Timeout as exc:
+        except Exception as exc:
             if attempt == max_attempts - 1:
-                raise TimeoutError(
+                raise RuntimeError(
                     f"LLM request timed out after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
                 ) from exc
             wait_s = backoff_s * (2**attempt)
