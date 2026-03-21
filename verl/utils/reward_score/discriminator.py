@@ -4,6 +4,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from typing import Any, Literal, Optional, Tuple
 from pydantic import BaseModel
 
@@ -32,6 +33,27 @@ class _JudgeScoreResponse(BaseModel):
 
 class _DifficultyResponse(BaseModel):
     difficulty: Literal["easy", "medium", "hard"]
+
+
+def get_score_logger(log_file: Optional[str] = None, level: int = logging.INFO) -> logging.Logger:
+    """Create or reuse file logger in current process (worker-safe, no main_ppo dependency)."""
+    logger = logging.getLogger("score_logger")
+    logger.setLevel(level)
+    logger.propagate = False
+
+    log_path = log_file or os.getenv("SCORE_LOG_PATH", "logs/rollouts.log")
+    abs_path = os.path.abspath(str(log_path))
+
+    for h in logger.handlers:
+        if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == abs_path:
+            return logger
+
+    os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
+    fh = RotatingFileHandler(abs_path, maxBytes=50 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | pid=%(process)d | %(message)s"))
+    logger.addHandler(fh)
+    return logger
 
 
 def _split_assistant(solution_str: str) -> Tuple[Optional[str], str]:
@@ -90,7 +112,7 @@ class ScoreWeights:
 class VLLMOpenAIConfig:
     base_url: str = os.getenv("VLLM_BASE_URL", os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode"))
     api_key: Optional[str] = os.getenv("VLLM_API_KEY", os.getenv("DASHSCOPE_API_KEY"))
-    model: str = os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))
+    model: str = os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-max"))
     timeout_s: int = 60
     timeout_retries: int = 2
     timeout_retry_backoff_s: float = 1.0
@@ -164,7 +186,6 @@ def _call_llm(
     extra_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Single LLM call entrypoint using OpenAI chat payload format."""
-    logger_score = logging.getLogger("score_logger")
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -181,6 +202,7 @@ def _call_llm(
 
     # Default path: call OpenAI-compatible API (vLLM/Qwen compatible).
     ctx = extra_context or {}
+    logger_score = get_score_logger(ctx.get("log_path"))
     vllm_cfg_raw = ctx.get("vllm_openai") or {}
     cfg = VLLMOpenAIConfig(
         base_url=vllm_cfg_raw.get(
@@ -363,6 +385,11 @@ def compute_score(
 
     Total score is clipped to [0, 10].
     """
+    log_path = kwargs.get("log_path")
+    if log_path is None and llm_extra_context is not None:
+        log_path = llm_extra_context.get("log_path")
+    logger_score = get_score_logger(log_path)
+
     weights = ScoreWeights()
     resp_token_len = int(resp_len)
 
@@ -584,7 +611,6 @@ Output format requirements:
         "llm_meta": llm_meta,
     }
 
-    logger_score = logging.getLogger("score_logger")
     logger_score.info(json.dumps(summary, ensure_ascii=False))
     print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
     print("total score is ", total)
