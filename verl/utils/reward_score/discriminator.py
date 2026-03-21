@@ -164,6 +164,7 @@ def _call_llm(
     extra_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Single LLM call entrypoint using OpenAI chat payload format."""
+    logger_score = logging.getLogger("score_logger")
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -234,9 +235,10 @@ def _call_llm(
     response = None
     for attempt in range(max_attempts):
         try:
-            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>")
-            print("error", "attempt", attempt)
-            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+            print("attempting LLM request", attempt)
+            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+            logger_score.info("LLM request attempt %d/%d", attempt + 1, max_attempts)
             response = requests.post(
                 url,
                 headers=headers,
@@ -244,14 +246,36 @@ def _call_llm(
                 timeout=cfg.timeout_s,
                 proxies={"http": None, "https": None},
             )
-            break
+            logger_score.info(
+                "LLM response attempt %d/%d status=%s body=%s",
+                attempt + 1,
+                max_attempts,
+                response.status_code,
+                response.text,
+            )
+            if response.status_code == 200:
+                break
+            else:
+                logger_score.warning(
+                    "LLM request failed on attempt %d/%d, status=%s body=%s",
+                    attempt + 1,
+                    max_attempts,
+                    response.status_code,
+                    response.text,
+                )
+                continue
         except Exception as exc:
             if attempt == max_attempts - 1:
+                logger_score.exception(
+                    "LLM request failed after %d attempts (timeout_s=%ss)",
+                    max_attempts,
+                    cfg.timeout_s,
+                )
                 raise RuntimeError(
                     f"LLM request timed out after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
                 ) from exc
             wait_s = backoff_s * (2**attempt)
-            logging.getLogger("score_logger").warning(
+            logger_score.warning(
                 "LLM timeout on attempt %d/%d, retrying in %.2fs",
                 attempt + 1,
                 max_attempts,
@@ -261,7 +285,6 @@ def _call_llm(
 
     if response is None:
         raise RuntimeError("LLM request failed before receiving a response.")
-    print(response)
     response.raise_for_status()
     data = response.json()
     message = data["choices"][0]["message"]
