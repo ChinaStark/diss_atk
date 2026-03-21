@@ -188,7 +188,7 @@ def _call_llm(
             os.getenv("VLLM_BASE_URL", os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")),
         ),
         api_key=vllm_cfg_raw.get("api_key", "sk-6702e7de01c84cb88059105db0205e63"),
-        model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))),
+        model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3.5-plus"))),
         timeout_s=int(vllm_cfg_raw.get("timeout_s", 300)),
         timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 10)),
         timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 5.0)),
@@ -204,6 +204,10 @@ def _call_llm(
         "messages": messages,
         "temperature": payload.get("temperature", cfg.temperature),
         "top_p": payload.get("top_p", cfg.top_p),
+        # "extra_body":{
+        #     "enable_thinking": True,
+        #     "thinking_budget": 4096
+        # },
         "max_tokens": payload.get("max_tokens", cfg.max_tokens),
     }
     if response_schema is not None:
@@ -235,9 +239,6 @@ def _call_llm(
     response = None
     for attempt in range(max_attempts):
         try:
-            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
-            print("attempting LLM request", attempt)
-            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
             logger_score.info("LLM request attempt %d/%d", attempt + 1, max_attempts)
             response = requests.post(
                 url,
@@ -585,7 +586,9 @@ Output format requirements:
 
     logger_score = logging.getLogger("score_logger")
     logger_score.info(json.dumps(summary, ensure_ascii=False))
-
+    print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+    print("total score is ", total)
+    print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
     if not return_breakdown:
         return float(total)
 

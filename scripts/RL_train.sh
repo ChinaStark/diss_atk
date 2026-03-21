@@ -3,7 +3,7 @@ export WANDB_API_KEY=43a37ea993da69ae3e41784a44b8591809c865d1
 
 DATA_DIR_PATH=/root/autodl-tmp/data_20260318
 
-RUN_ID=0318_2
+RUN_ID=0321
 GPU_ENV=2GPU
 MODEL_ENV=Qwen3-4B-Instruct
 # MODEL_P=/zhiliang/huggingface/hub/models--Qwen--Qwen2.5-Coder-7B-Instruct/snapshots/c03e6d358207e414f1eca0bb1891e29f1db0e242
@@ -24,12 +24,12 @@ python -m verl.trainer.main_ppo \
     data.train_batch_size=32 \
     data.val_batch_size=16 \
     data.max_prompt_length=8192 \
-    data.max_response_length=1536 \
+    data.max_response_length=2048 \
     data.filter_overlong_prompts=True \
     actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=20000\
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32000\
     actor_rollout_ref.actor.use_dynamic_bsz=true\
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.use_kl_loss=True \
@@ -40,12 +40,12 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.ref.fsdp_config.param_offload=False \
     actor_rollout_ref.ref.fsdp_config.optimizer_offload=False \
-    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=38000 \
-    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=38000\
+    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=50000 \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=50000\
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.62 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.n=8 \
-    actor_rollout_ref.rollout.temperature=0.6 \
+    actor_rollout_ref.rollout.temperature=1.1 \
     actor_rollout_ref.rollout.max_model_len=10240\
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
@@ -62,7 +62,7 @@ python -m verl.trainer.main_ppo \
     trainer.default_hdfs_dir=null \
     trainer.resume_mode=auto \
     trainer.rollout_data_dir=$LOG_PATH/$EXPERIMENT_NAME/rollout_data \
-    trainer.save_freq=30 \
+    trainer.save_freq=50 \
     trainer.total_epochs=2 $@ 2>&1 | tee $LOG_PATH/$EXPERIMENT_NAME/grpo.log
 # actor_rollout_ref.model.target_modules=[q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj] \
 # trainer.resume_mode=auto \

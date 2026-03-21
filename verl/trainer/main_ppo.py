@@ -271,12 +271,6 @@ class TaskRunner:
         logger.propagate = False  # IMPORTANT: prevents printing to root logger/console
 
         abs_path = os.path.abspath(log_file)
-        # Keep only the target file handler to avoid duplicated logs on stale paths.
-        for h in list(logger.handlers):
-            if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) != abs_path:
-                logger.removeHandler(h)
-                h.close()
-
         # Avoid adding duplicate handlers (common when this code is imported multiple times)
         for h in logger.handlers:
             if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == abs_path:
