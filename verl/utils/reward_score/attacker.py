@@ -98,7 +98,13 @@ def get_score_logger(log_file: str = "logs/rollouts.log", level: int = logging.I
     logger.addHandler(fh)
     return logger
 
-_SCORE_LOGGER = get_score_logger("logs/rollouts_atk.log")
+
+def _get_active_score_logger() -> logging.Logger:
+    """Reuse existing score_logger handlers; fallback to attacker log only when uninitialized."""
+    logger = logging.getLogger("score_logger")
+    if logger.handlers:
+        return logger
+    return get_score_logger("logs/rollouts_atk.log")
 
 # =========================
 # Judge prompt (yours)
@@ -318,6 +324,7 @@ def compute_score(
     gold_label: 1->YES, 0->NO（表示 attacker SQL 是否真的能正确回答 question）
     schema/question: 用于 sql_check_prompt
     """
+    score_logger = _get_active_score_logger()
     # get the attacked sql
     attacker_sql = extract_sql_from_model_output(model_output)
     if attacker_sql == "" : return -0.5
@@ -358,7 +365,7 @@ def compute_score(
         correct = False
     else:
         is_ok = evaluate_sql_match(attacker_sql, ground_truth, db_id, db_base_path="/root/autodl-fs/train_databases", timeout=30)
-        _SCORE_LOGGER.info(f"the sql is {is_ok}")
+        score_logger.info(f"the sql is {is_ok}")
         if is_ok == True and strict_ok:
             r_label = weights.label_correct_strict
         elif is_ok == True:
@@ -397,7 +404,7 @@ def compute_score(
         "judge_resp": judge_text,
         "len": resp_len
     }
-    _SCORE_LOGGER.info(json.dumps(summary, ensure_ascii=False))
+    score_logger.info(json.dumps(summary, ensure_ascii=False))
     return float(total)
 
 

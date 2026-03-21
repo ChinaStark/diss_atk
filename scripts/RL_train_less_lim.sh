@@ -47,7 +47,7 @@ python -m verl.trainer.main_ppo \
     algorithm.kl_ctrl.kl_coef=0.001 \
     reward_model.reward_manager=diss\
     trainer.critic_warmup=0 \
-    trainer.logger='["console","tensorboard"]' \
+    trainer.logger='["console","wandb"]' \
     +trainer.logger_path=$LOG_PATH/$EXPERIMENT_NAME/rollouts.log \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
