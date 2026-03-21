@@ -188,9 +188,9 @@ def _call_llm(
         ),
         api_key=vllm_cfg_raw.get("api_key", "sk-6702e7de01c84cb88059105db0205e63"),
         model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))),
-        timeout_s=int(vllm_cfg_raw.get("timeout_s", 60)),
-        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 5)),
-        timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 1.0)),
+        timeout_s=int(vllm_cfg_raw.get("timeout_s", 300)),
+        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 10)),
+        timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 5.0)),
         max_tokens=int(vllm_cfg_raw.get("max_tokens", 2048)),
         temperature=float(vllm_cfg_raw.get("temperature", 0.0)),
         top_p=float(vllm_cfg_raw.get("top_p", 0.95)),
@@ -234,6 +234,9 @@ def _call_llm(
     response = None
     for attempt in range(max_attempts):
         try:
+            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>")
+            print("error", "attempt", attempt)
+            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<")
             response = requests.post(
                 url,
                 headers=headers,
@@ -243,9 +246,6 @@ def _call_llm(
             )
             break
         except Exception as exc:
-            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>")
-            print("error", "attempt", attempt)
-            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<")
             if attempt == max_attempts - 1:
                 raise RuntimeError(
                     f"LLM request timed out after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
@@ -261,7 +261,7 @@ def _call_llm(
 
     if response is None:
         raise RuntimeError("LLM request failed before receiving a response.")
-
+    print(response)
     response.raise_for_status()
     data = response.json()
     message = data["choices"][0]["message"]
