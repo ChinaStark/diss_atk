@@ -188,9 +188,9 @@ def _call_llm(
         ),
         api_key=vllm_cfg_raw.get("api_key", "sk-6702e7de01c84cb88059105db0205e63"),
         model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))),
-        timeout_s=int(vllm_cfg_raw.get("timeout_s", 60)),
-        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 2)),
-        timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 1.0)),
+        timeout_s=int(vllm_cfg_raw.get("timeout_s", 300)),
+        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 10)),
+        timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 5.0)),
         max_tokens=int(vllm_cfg_raw.get("max_tokens", 2048)),
         temperature=float(vllm_cfg_raw.get("temperature", 0.0)),
         top_p=float(vllm_cfg_raw.get("top_p", 0.95)),
@@ -234,6 +234,9 @@ def _call_llm(
     response = None
     for attempt in range(max_attempts):
         try:
+            print(">>>>>>>>>>>>>>>>>>>>>>>>>>>")
+            print("error", "attempt", attempt)
+            print("<<<<<<<<<<<<<<<<<<<<<<<<<<<")
             response = requests.post(
                 url,
                 headers=headers,
@@ -242,9 +245,9 @@ def _call_llm(
                 proxies={"http": None, "https": None},
             )
             break
-        except requests.exceptions.Timeout as exc:
+        except Exception as exc:
             if attempt == max_attempts - 1:
-                raise TimeoutError(
+                raise RuntimeError(
                     f"LLM request timed out after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
                 ) from exc
             wait_s = backoff_s * (2**attempt)
@@ -258,7 +261,7 @@ def _call_llm(
 
     if response is None:
         raise RuntimeError("LLM request failed before receiving a response.")
-
+    print(response)
     response.raise_for_status()
     data = response.json()
     message = data["choices"][0]["message"]
@@ -292,9 +295,9 @@ def _llm_output_to_dict(raw: Any) -> dict[str, Any]:
 def compute_score(
     model_output: str,
     gold_label: int,
-    resp_token_len: int,
+    resp_len: int,
     # required: pass as (yes_prob, no_prob), then we apply softmax and compute margin.
-    yes_no_probs: Optional[Tuple[float, float]] = None,
+    yes_no_prob: Optional[Tuple[float, float]] = None,
     # llm_extra_context supports per-step params:
     # temperature/judge_temperature/difficulty_temperature,
     # top_p/judge_top_p/difficulty_top_p,
@@ -337,8 +340,7 @@ def compute_score(
     Total score is clipped to [0, 10].
     """
     weights = ScoreWeights()
-    resp_token_len = int(resp_token_len)
-    gold = "YES" if gold_label == 1 else "NO"
+    resp_token_len = int(resp_len)
 
     processed, err = _split_assistant(model_output)
     text = processed if processed is not None else model_output
@@ -358,10 +360,10 @@ def compute_score(
     # -------------------------
     # 2) Label score
     # -------------------------
-    if yes_no_probs is not None:
-        label_meta: dict[str, Any] = {"source": "yes_no_probs"}
-        yes_prob = float(yes_no_probs[0])
-        no_prob = float(yes_no_probs[1])
+    if yes_no_prob is not None:
+        label_meta: dict[str, Any] = {"source": "yes_no_prob"}
+        yes_prob = float(yes_no_prob[0])
+        no_prob = float(yes_no_prob[1])
         p_yes, p_no = _softmax2(yes_prob, no_prob)
         margin = (p_yes - p_no) if gold_label == 1 else (p_no - p_yes)
         margin_pos = _clip(margin, 0.0, 1.0)
@@ -391,32 +393,21 @@ def compute_score(
     }
     llm_meta: dict[str, Any] = {"enabled": False}
 
-    missing_fields = []
-    if reference_sql is None:
-        missing_fields.append("reference_sql")
-    if predicted_sql is None:
-        missing_fields.append("predicted_sql")
-    if schema is None:
-        missing_fields.append("schema")
-    if 0 < len(missing_fields) < 3:
-        raise ValueError(f"Missing required fields for LLM judging: {', '.join(missing_fields)}")
+    llm_ctx = llm_extra_context or {}
 
-    if not missing_fields:
-        llm_ctx = llm_extra_context or {}
+    shared_temperature = llm_ctx.get("temperature")
+    judge_temperature = llm_ctx.get("judge_temperature", shared_temperature)
+    difficulty_temperature = llm_ctx.get("difficulty_temperature", shared_temperature)
 
-        shared_temperature = llm_ctx.get("temperature")
-        judge_temperature = llm_ctx.get("judge_temperature", shared_temperature)
-        difficulty_temperature = llm_ctx.get("difficulty_temperature", shared_temperature)
+    shared_top_p = llm_ctx.get("top_p")
+    judge_top_p = llm_ctx.get("judge_top_p", shared_top_p)
+    difficulty_top_p = llm_ctx.get("difficulty_top_p", shared_top_p)
 
-        shared_top_p = llm_ctx.get("top_p")
-        judge_top_p = llm_ctx.get("judge_top_p", shared_top_p)
-        difficulty_top_p = llm_ctx.get("difficulty_top_p", shared_top_p)
+    shared_max_tokens = llm_ctx.get("max_tokens")
+    judge_max_tokens = llm_ctx.get("judge_max_tokens", shared_max_tokens)
+    difficulty_max_tokens = llm_ctx.get("difficulty_max_tokens", shared_max_tokens)
 
-        shared_max_tokens = llm_ctx.get("max_tokens")
-        judge_max_tokens = llm_ctx.get("judge_max_tokens", shared_max_tokens)
-        difficulty_max_tokens = llm_ctx.get("difficulty_max_tokens", shared_max_tokens)
-
-        judge_user_prompt = f"""You are an expert evaluator for NL2SQL consistency-judgment reasoning.
+    judge_user_prompt = f"""You are an expert evaluator for NL2SQL consistency-judgment reasoning.
 Your task is to score the quality of the model_output, where model_output is a judge model's reasoning about:
 "Does predicted_sql correctly answer user_question under this schema?"
 Use Schema, User Question, Reference SQL (golden guidance), and Predicted SQL as evidence.
@@ -449,18 +440,18 @@ Do not score by SQL style; score the judge model's reasoning process and quality
 2) JSON must contain exactly two keys: score, reason.
 3) score must be an integer in [1, 10].
 4) reason must be concise (1-3 sentences) and cite key evidence from model_output plus SQL-question consistency analysis."""
-        judge_raw = _call_llm(
-            user_prompt=judge_user_prompt,
-            temperature=judge_temperature,
-            top_p=judge_top_p,
-            max_tokens=judge_max_tokens,
-            response_schema_name="sql_judge_score_response",
-            response_schema=_JudgeScoreResponse.model_json_schema(),
-            extra_context=llm_extra_context,
-        )
-        judge_score_result = _llm_output_to_dict(judge_raw)
+    judge_raw = _call_llm(
+        user_prompt=judge_user_prompt,
+        temperature=judge_temperature,
+        top_p=judge_top_p,
+        max_tokens=judge_max_tokens,
+        response_schema_name="sql_judge_score_response",
+        response_schema=_JudgeScoreResponse.model_json_schema(),
+        extra_context=llm_extra_context,
+    )
+    judge_score_result = _llm_output_to_dict(judge_raw)
 
-        difficulty_user_prompt = f"""You are an expert NL2SQL difficulty estimator.
+    difficulty_user_prompt = f"""You are an expert NL2SQL difficulty estimator.
 Estimate only the task complexity of judging whether Predicted SQL answers User Question under Schema.
 Do not score correctness, do not use gold_label, and do not include quality judgment.
 
@@ -479,31 +470,31 @@ Output format requirements:
 1) Return a JSON object only (no markdown, no extra text).
 2) JSON must contain exactly one key: difficulty.
 3) difficulty must be one of: easy, medium, hard."""
-        difficulty_raw = _call_llm(
-            user_prompt=difficulty_user_prompt,
-            temperature=difficulty_temperature,
-            top_p=difficulty_top_p,
-            max_tokens=difficulty_max_tokens,
-            response_schema_name="sql_difficulty_response",
-            response_schema=_DifficultyResponse.model_json_schema(),
-            extra_context=llm_extra_context,
-        )
-        difficulty_result = _llm_output_to_dict(difficulty_raw)
+    difficulty_raw = _call_llm(
+        user_prompt=difficulty_user_prompt,
+        temperature=difficulty_temperature,
+        top_p=difficulty_top_p,
+        max_tokens=difficulty_max_tokens,
+        response_schema_name="sql_difficulty_response",
+        response_schema=_DifficultyResponse.model_json_schema(),
+        extra_context=llm_extra_context,
+    )
+    difficulty_result = _llm_output_to_dict(difficulty_raw)
 
-        llm_result = {
-            "score": judge_score_result.get("score"),
-            "difficulty": difficulty_result.get("difficulty"),
-            "reason": judge_score_result.get("reason"),
+    llm_result = {
+        "score": judge_score_result.get("score"),
+        "difficulty": difficulty_result.get("difficulty"),
+        "reason": judge_score_result.get("reason"),
+    }
+    llm_meta.update(
+        {
+            "enabled": True,
+            "judge_raw": judge_score_result,
+            "judge_reasoning": judge_raw.get("reasoning"),
+            "difficulty_raw": difficulty_result,
+            "difficulty_reasoning": difficulty_raw.get("reasoning"),
         }
-        llm_meta.update(
-            {
-                "enabled": True,
-                "judge_raw": judge_score_result,
-                "judge_reasoning": judge_raw.get("reasoning"),
-                "difficulty_raw": difficulty_result,
-                "difficulty_reasoning": difficulty_raw.get("reasoning"),
-            }
-        )
+    )
 
     llm_meta["result"] = llm_result
 
@@ -586,7 +577,6 @@ Output format requirements:
         "meta": {
             "strict_ok": bool(strict_ok),
             "pred": pred,
-            "gold": gold,
             "token_len": int(resp_token_len),
             "header_error": err,
             "label_meta": label_meta,
@@ -714,7 +704,7 @@ CREATE TABLE `schools` (
         sample_out,
         gold_label=1,
         resp_token_len=len(sample_out),
-        yes_no_probs=(3.2, 0.3),
+        yes_no_prob=(3.2, 0.3),
         reference_sql=sample_answer_sql,
         predicted_sql=sample_answer_sql,
         schema=sample_schema,

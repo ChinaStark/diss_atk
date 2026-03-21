@@ -82,7 +82,7 @@ class DissRewardLoopManager(RewardLoopManagerBase):
 
         score: float
         if isinstance(result, dict):
-            score = result["score"]
+            score = result["total"]
             for key, value in result.items():
                 reward_extra_info[key] = value
         else:

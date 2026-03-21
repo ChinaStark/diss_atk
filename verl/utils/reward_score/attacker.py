@@ -201,103 +201,101 @@ def call_vllm_judge(prompt: str, cfg: VLLMJudgeConfig) -> str:
 # ========================
 # 执行sql 获取 label score
 # ========================
-import concurrent.futures
-import time
-import random
-import sqlite3
+import json
 import os
+import subprocess
+import sys
+import time
+from typing import Any, Dict, Optional, Tuple
 
-# 真实数据库执行函数
-def execute_sql_query(sql, db_path, timeout_seconds=30):
-    """
-    执行 SQL 语句。
-    直接连接 SQLite 数据库执行。
-    注意：如果 db_path 不存在，将抛出 FileNotFoundError。
-    """
-    # 1. 检查数据库文件是否存在
-    if not os.path.exists(db_path):
-        raise FileNotFoundError(f"Database file not found: {db_path}")
-    
-    conn = None
+
+def run_sql_in_subprocess(
+    python_exe: str,
+    runner_py: str,
+    db_path: str,
+    sql: str,
+    timeout: float,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """运行子进程并返回 (payload, error_msg). 超时/崩溃会返回 None + err."""
+
+    # 不要 shell=True（更安全也更好跨平台）
+    cmd = [python_exe, "-u", runner_py, "--db", db_path, "--sql", sql]
+
     try:
-        # 2. 连接真实的 SQLite 数据库
-        # timeout 参数指定等待数据库锁释放的时间（秒），并非查询执行超时
-        conn = sqlite3.connect(db_path, timeout=timeout_seconds)
-        cursor = conn.cursor()
-        
-        # 执行查询
-        cursor.execute(sql)
-        result = cursor.fetchall()
-        return result
-            
-    except sqlite3.Error as e:
-        raise e 
-    finally:
-        if conn:
-            conn.close()
+        completed = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"Timed out after {timeout}s"
 
-def evaluate_sql_match(attacker_sql, gt_sql, db_id, db_base_path, gold, timeout=30):
-    """
-    多线程执行 SQL 并比较结果
-    参数:
-    - db_id: 数据库的 ID (例如 "concert_singer")
-    - db_base_path: 数据库所在的根目录 (例如 "./data/database")
-    """
+    # 子进程可能把错误写 stderr，也可能 stdout 不是合法 JSON
+    out = (completed.stdout or "").strip()
+    err = (completed.stderr or "").strip()
+
+    if not out:
+        return None, f"No stdout. stderr={err[:500]}"
+
+    try:
+        payload = json.loads(out)
+    except Exception:
+        return None, f"Invalid JSON from child. stdout={out[:500]} stderr={err[:500]}"
+
+    if not payload.get("ok"):
+        return payload, payload.get("error") or err or "Child reported failure"
+
+    return payload, None
+
+
+def evaluate_sql_match(attacker_sql: str, gt_sql: str, db_id: str, db_base_path: str, timeout: float = 30.0):
     attacker_sql = attacker_sql.strip()
     gt_sql = gt_sql.strip()
-    
-    # 构造数据库文件的完整路径
-    # 假设结构为: base_path/db_id/db_id.sqlite (Spider 数据集常见结构)
-    # 如果你的结构不同，请修改此处，例如: os.path.join(db_base_path, f"{db_id}.sqlite")
+
     db_path = os.path.join(db_base_path, db_id, f"{db_id}.sqlite")
-    
-    attacker_result = None
-    gt_result = None
-    execution_error = False
 
-    # 使用 ThreadPoolExecutor 并行执行
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        # 提交任务，将 db_path 传递给执行函数
-        future_attacker = executor.submit(execute_sql_query, attacker_sql, db_path, timeout)
-        future_gt = executor.submit(execute_sql_query, gt_sql, db_path, timeout)
+    # 让 python_exe 指向当前解释器，避免环境不一致
+    python_exe = sys.executable
 
-        try:
-            # 获取结果，设置超时时间
-            # 注意：Python 线程难以强制 Kill，这里的 timeout 是指主线程不再等待
-            # 如果是 SQLite，真正的 I/O 中断比较困难，但在获取结果层面我们会放弃等待
-            attacker_result = future_attacker.result(timeout=timeout)
-            gt_result = future_gt.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            print("❌ Execution Timed Out!")
-            execution_error = True
-        except Exception as e:
-            print(f"❌ Execution Error: {e}")
-            execution_error = True
+    # runner 脚本路径：你可以改成绝对路径
+    runner_py = os.path.join(os.path.dirname(__file__), "sql_runner.py")
 
-    # 评分逻辑
-    ret = False
-    
-    if execution_error:
+    # --- 并行跑：用两个 subprocess 同时起，然后分别等待（各自 timeout） ---
+    # 如果你更在意“总超时”，可以把 timeout 分摊或者用 Popen + 统一计时。
+
+    payload_a, err_a = run_sql_in_subprocess(python_exe, runner_py, db_path, attacker_sql, timeout)
+    payload_g, err_g = run_sql_in_subprocess(python_exe, runner_py, db_path, gt_sql, timeout)
+
+    if err_a or err_g:
+        print(f"❌ attacker err: {err_a}")
+        print(f"❌ gt err:       {err_g}")
         print("Scoring: False (Execution Failed)")
-        return ret
+        return False
 
-    # 比较结果集 (使用 set 忽略顺序)
-    # 注意：结果集里的元素必须是 hashable 的 (如 tuple)，列表不能被 set
+    rows_a = payload_a["rows"]
+    rows_g = payload_g["rows"]
+
+    # set 比较（忽略顺序）
     try:
-        attacker_set = set(attacker_result)
-        gt_set = set(gt_result)
-        
-        is_match = (attacker_set == gt_set)
-        
-        print(f"Attacker Result: {attacker_set}")
-        print(f"GT Result:       {gt_set}")
-        print(f"Match:           {is_match}")
+        attacker_set = set(tuple(r) for r in rows_a)
+        gt_set = set(tuple(r) for r in rows_g)
+    except TypeError:
+        # 极少数情况下包含不可 hash 的对象：做字符串化兜底
+        attacker_set = set(map(str, rows_a))
+        gt_set = set(map(str, rows_g))
 
-        if not is_match:
-            return True
-                
-    except Exception as e:
-        print(f"Error during comparison: {e}")
+    is_match = (attacker_set == gt_set)
+
+    print(f"Attacker Result: {attacker_set}")
+    print(f"GT Result:       {gt_set}")
+    print(f"Match:           {is_match}")
+
+    # 你原来的逻辑：不匹配返回 True（像是在判断 attack 是否成功）
+    # 如果你想要“SQL 等价则 True”，把这里改成：return is_match
+    if not is_match:
+        return True
 
     return False
 # =========================
@@ -359,7 +357,7 @@ def compute_score(
         r_label = 0.0
         correct = False
     else:
-        is_ok = evaluate_sql_match(attacker_sql, ground_truth, db_id, db_base_path="/root/autodl-fs/train_databases", gold=gold, timeout=30)
+        is_ok = evaluate_sql_match(attacker_sql, ground_truth, db_id, db_base_path="/root/autodl-fs/train_databases", timeout=30)
         _SCORE_LOGGER.info(f"the sql is {is_ok}")
         if is_ok == True and strict_ok:
             r_label = weights.label_correct_strict
