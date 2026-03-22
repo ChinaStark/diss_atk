@@ -210,11 +210,11 @@ def _call_llm(
             os.getenv("VLLM_BASE_URL", os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")),
         ),
         api_key=vllm_cfg_raw.get("api_key", "sk-6702e7de01c84cb88059105db0205e63"),
-        model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3.5-plus"))),
+        model=vllm_cfg_raw.get("model", os.getenv("VLLM_MODEL", os.getenv("QWEN_MODEL", "qwen3-coder-plus"))),
         timeout_s=int(vllm_cfg_raw.get("timeout_s", 300)),
-        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 10)),
-        timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 5.0)),
-        max_tokens=int(vllm_cfg_raw.get("max_tokens", 2048)),
+        timeout_retries=int(vllm_cfg_raw.get("timeout_retries", 15)),
+        timeout_retry_backoff_s=float(vllm_cfg_raw.get("timeout_retry_backoff_s", 10.0)),
+        max_tokens=int(vllm_cfg_raw.get("max_tokens", 1536)),
         temperature=float(vllm_cfg_raw.get("temperature", 0.0)),
         top_p=float(vllm_cfg_raw.get("top_p", 0.95)),
     )
@@ -258,7 +258,7 @@ def _call_llm(
         url = base + "/v1/chat/completions"
     max_attempts = max(1, 1 + int(cfg.timeout_retries))
     backoff_s = max(0.0, float(cfg.timeout_retry_backoff_s))
-    response = None
+    last_error: Optional[Exception] = None
     for attempt in range(max_attempts):
         try:
             logger_score.info("LLM request attempt %d/%d", attempt + 1, max_attempts)
@@ -276,53 +276,51 @@ def _call_llm(
                 response.status_code,
                 response.text,
             )
-            if response.status_code == 200:
-                break
+            response.raise_for_status()
+            data = response.json()
+            message = data["choices"][0]["message"]
+            content = message.get("content")
+            if isinstance(content, dict):
+                parsed_content: Any = content
+            elif isinstance(content, list):
+                content_text = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content).strip()
+                parsed_content = content_text
+            elif content is None:
+                parsed_content = ""
             else:
-                logger_score.warning(
-                    "LLM request failed on attempt %d/%d, status=%s body=%s",
-                    attempt + 1,
-                    max_attempts,
-                    response.status_code,
-                    response.text,
-                )
-                continue
+                parsed_content = str(content).strip()
+
+            # When schema-constrained output is requested, enforce JSON parsing here.
+            if response_schema is not None:
+                if isinstance(parsed_content, str):
+                    parsed_content = json.loads(parsed_content)
+                if not isinstance(parsed_content, dict):
+                    raise ValueError("LLM content must be a JSON object when response_schema is set.")
+
+            reasoning = message.get("reasoning", message.get("reasoning_content"))
+            return {"content": parsed_content, "reasoning": reasoning, "message": message}
         except Exception as exc:
+            last_error = exc
             if attempt == max_attempts - 1:
                 logger_score.exception(
-                    "LLM request failed after %d attempts (timeout_s=%ss)",
+                    "LLM request/parse failed after %d attempts (timeout_s=%ss)",
                     max_attempts,
                     cfg.timeout_s,
                 )
                 raise RuntimeError(
-                    f"LLM request timed out after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
+                    f"LLM request/parse failed after {max_attempts} attempts (timeout_s={cfg.timeout_s}s)"
                 ) from exc
             wait_s = backoff_s * (2**attempt)
             logger_score.warning(
-                "LLM timeout on attempt %d/%d, retrying in %.2fs",
+                "LLM call failed on attempt %d/%d (%s), retrying in %.2fs",
                 attempt + 1,
                 max_attempts,
+                str(exc),
                 wait_s,
             )
             time.sleep(wait_s)
 
-    if response is None:
-        raise RuntimeError("LLM request failed before receiving a response.")
-    response.raise_for_status()
-    data = response.json()
-    message = data["choices"][0]["message"]
-    content = message.get("content")
-    if isinstance(content, dict):
-        parsed_content: Any = content
-    elif isinstance(content, list):
-        content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content).strip()
-        parsed_content = content
-    elif content is None:
-        parsed_content = ""
-    else:
-        parsed_content = str(content).strip()
-    reasoning = message.get("reasoning", message.get("reasoning_content"))
-    return {"content": parsed_content, "reasoning": reasoning, "message": message}
+    raise RuntimeError("LLM request/parse failed without a captured exception.") from last_error
 
 
 def _llm_output_to_dict(raw: Any) -> dict[str, Any]:
